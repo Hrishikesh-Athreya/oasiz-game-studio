@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@types/node": "^25.0.10",
+    "replicate": "^1.4.0"
+  }
+}
