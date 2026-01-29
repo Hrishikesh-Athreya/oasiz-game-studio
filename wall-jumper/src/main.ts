@@ -3,18 +3,19 @@ import Matter from 'matter-js';
 
 // --- CONFIGURATION ---
 const CONFIG = {
-    GRAVITY: 1.0,           // Reduced from 1.2 for floatier jumps
-    JUMP_FORCE_X: 10,       // Increased for better horizontal reach
-    JUMP_FORCE_Y: -15,      // Increased for higher jumps
-    WALL_WIDTH: 40,
+    GRAVITY: 0.8,           // Lower gravity for more "air time"
+    JUMP_FORCE_X: 12,       // Stronger push off the wall
+    JUMP_FORCE_Y: -18,     // Increased for higher jumps
+    WALL_WIDTH: 30,
+    WALL_HEIGHT: 300,
     WALL_HEIGHT_MIN: 100,
     WALL_HEIGHT_MAX: 250,   // Reduced max for better spacing
     PLAYER_SIZE: 30,
     GENERATE_AHEAD: 1000,   // How far up to generate walls
     DELETE_BELOW: 800,      // When to delete walls below camera
     WALL_PADDING: 60,       // Keep walls away from edge
-    WALL_GAP_MIN: 150,      // Minimum vertical gap between walls
-    WALL_GAP_MAX: 250,      // Maximum vertical gap between walls
+    WALL_GAP_MIN: 50,      // Minimum vertical gap between walls
+    WALL_GAP_MAX: 150,      // Maximum vertical gap between walls
 };
 
 // --- 1. SETUP ENGINE ---
@@ -40,10 +41,9 @@ let walls: Matter.Body[] = [];
 let gameActive = false;
 let score = 0;
 let highestPoint = 0;
-let lastWallY = 0;       // Tracks the height of the last generated wall
-let lastWallHeight = 0;  // Track last wall's height for proper spacing
+let lastWallY = window.innerHeight - 100;
+let lastWallX = 80; // Track X for floating walls (start on left)
 let cameraY = 0;
-let sideBias = 1;        // Track side for zig-zag pattern (1 = right, -1 = left)
 
 // Enums for clarity
 const STATE = {
@@ -52,7 +52,7 @@ const STATE = {
     GROUND: 'GROUND'
 };
 let currentState = STATE.GROUND;
-let currentWallSide = 0; // -1 for Left Wall, 1 for Right Wall
+let currentWallSide = 0; // -1 for left face of wall, 1 for right face
 let canDoubleJump = false;
 
 // --- 3. GAME OBJECTS ---
@@ -79,39 +79,64 @@ function createWall(x: number, y: number, height: number, isBounce = false) {
     });
 }
 
-// Level Generator with Zig-Zag Pattern
+// Level Generator - Floating Walls with Random X within Screen Halves
 function generateLevelStep() {
+    // Only generate if we need more walls above the camera
     const spawnLimit = cameraY - CONFIG.GENERATE_AHEAD;
 
-    // While the last wall is below the spawn limit (meaning we need more walls above)
-    while (lastWallY > spawnLimit) {
-        // Calculate proper vertical gap based on previous wall height
-        const gap = CONFIG.WALL_GAP_MIN + Math.random() * (CONFIG.WALL_GAP_MAX - CONFIG.WALL_GAP_MIN);
-        const nextY = lastWallY - (lastWallHeight / 2) - gap; // Account for wall height
+    // Only spawn ONE wall if we need one
+    if (lastWallY > spawnLimit) {
+        const screenWidth = window.innerWidth;
+        const center = screenWidth / 2;
 
-        // Zig-zag pattern: alternate sides
-        sideBias *= -1;
+        // 1. Determine which "half" of the screen to spawn on
+        // If the last wall was on the Left, spawn this one on the Right (and vice versa)
+        const isLastWallLeft = lastWallX < center;
 
-        let nextX;
-        if (sideBias === -1) {
-            // Left side
-            nextX = CONFIG.WALL_PADDING;
+        let minX, maxX;
+
+        if (isLastWallLeft) {
+            // Spawn on the RIGHT half
+            minX = center + 50;          // 50px buffer from center
+            maxX = screenWidth - 80;      // 80px buffer from right edge
         } else {
-            // Right side
-            nextX = window.innerWidth - CONFIG.WALL_PADDING;
+            // Spawn on the LEFT half
+            minX = 80;                    // 80px buffer from left edge
+            maxX = center - 50;           // 50px buffer from center
         }
 
-        const height = CONFIG.WALL_HEIGHT_MIN + Math.random() * (CONFIG.WALL_HEIGHT_MAX - CONFIG.WALL_HEIGHT_MIN);
-        const newWall = createWall(nextX, nextY, height);
+        // 2. Randomize X within that calculated range
+        const nextX = Math.random() * (maxX - minX) + minX;
 
-        walls.push(newWall);
-        Matter.World.add(world, newWall);
+        // 3. Vertical Spacing (Gap)
+        const gap = 120 + Math.random() * 40;
+        const nextY = lastWallY - gap;
 
+        // 4. Create the Floating Wall Body
+        const wallHeight = 200 + Math.random() * 100;
+        const wallColor = isLastWallLeft ? '#00aaff' : '#ff0055'; // Blue for Right, Red for Left
+
+        const wall = Matter.Bodies.rectangle(
+            nextX,
+            nextY,
+            CONFIG.WALL_WIDTH,
+            wallHeight,
+            {
+                isStatic: true,
+                label: 'wall',
+                render: { fillStyle: wallColor }
+            }
+        );
+
+        walls.push(wall);
+        Matter.World.add(engine.world, wall);
+
+        // 5. Update state for the next generation cycle
         lastWallY = nextY;
-        lastWallHeight = height;
+        lastWallX = nextX;
     }
 
-    // Cleanup Logic - remove walls far below camera
+    // Cleanup - remove walls far below camera
     walls = walls.filter(wall => {
         if (wall.position.y > cameraY + CONFIG.DELETE_BELOW) {
             Matter.World.remove(world, wall);
@@ -191,55 +216,65 @@ window.addEventListener('mousedown', handleInput);
 window.addEventListener('touchstart', (e) => { e.preventDefault(); handleInput(); }, { passive: false });
 
 // Collision Handling (The "Stick" Logic)
+// --- COLLISION HANDLING ---
 Matter.Events.on(engine, 'collisionStart', (event) => {
     event.pairs.forEach((pair) => {
         const bodyA = pair.bodyA;
         const bodyB = pair.bodyB;
 
-        // Identify who is who
-        let playerBody = null;
-        let otherBody = null;
+        // 1. Extract the labels so we know what hit what
+        const labelA = bodyA.label;
+        const labelB = bodyB.label;
 
-        if (bodyA.label === 'player') { playerBody = bodyA; otherBody = bodyB; }
-        else if (bodyB.label === 'player') { playerBody = bodyB; otherBody = bodyA; }
+        // 2. Check if the PLAYER hit a WALL
+        let playerBody: Matter.Body | null = null;
+        let wallBody: Matter.Body | null = null;
 
-        if (playerBody && (otherBody.label === 'wall' || otherBody.label === 'bounce-wall')) {
-            // THE "CHEAT": Freeze physics immediately
+        // Find which body is which (since they can be in any order)
+        if (labelA === 'player' && labelB === 'wall') {
+            playerBody = bodyA;
+            wallBody = bodyB;
+        } else if (labelB === 'player' && labelA === 'wall') {
+            playerBody = bodyB;
+            wallBody = bodyA;
+        }
+
+        // 3. Execute Collision Logic
+        if (playerBody && wallBody) {
+            // Stop gravity/sliding temporarily
             Matter.Body.setStatic(playerBody, true);
-            Matter.Body.setAngle(playerBody, 0); // Reset rotation so he looks flat against wall
 
+            // Update game state
             currentState = STATE.WALL;
-            canDoubleJump = true; // Reset double jump
+            canDoubleJump = true;
 
-            // Improved snapping logic - ensure no overlap
-            const halfWall = CONFIG.WALL_WIDTH / 2;
-            const halfPlayer = CONFIG.PLAYER_SIZE / 2;
+            // Reset rotation
+            Matter.Body.setAngle(playerBody, 0);
 
-            if (playerBody.position.x < otherBody.position.x) {
-                currentWallSide = -1; // Player is on the LEFT side of the wall
-                Matter.Body.setPosition(playerBody, {
-                    x: otherBody.position.x - halfWall - halfPlayer - 1, // Extra 1px gap
-                    y: playerBody.position.y
-                });
-            } else {
-                currentWallSide = 1; // Player is on the RIGHT side of the wall
-                Matter.Body.setPosition(playerBody, {
-                    x: otherBody.position.x + halfWall + halfPlayer + 1, // Extra 1px gap
-                    y: playerBody.position.y
-                });
-            }
+            // Determine which side of the wall the player hit
+            // If player X is less than Wall X, they are on the Left face
+            const isPlayerOnLeft = playerBody.position.x < wallBody.position.x;
 
-            // Haptic feedback on wall stick
+            const xOffset = (CONFIG.WALL_WIDTH / 2) + (CONFIG.PLAYER_SIZE / 2) + 1;
+
+            // Snap player to the correct face of the wall
+            Matter.Body.setPosition(playerBody, {
+                x: isPlayerOnLeft
+                    ? wallBody.position.x - xOffset  // Stick to Left side
+                    : wallBody.position.x + xOffset, // Stick to Right side
+                y: playerBody.position.y
+            });
+
+            // Set jump direction based on which face we're on
+            // Left face (-1) = jump left, Right face (1) = jump right
+            currentWallSide = isPlayerOnLeft ? -1 : 1;
+
+            // Haptic feedback
             if (typeof (window as any).triggerHaptic === 'function') {
                 (window as any).triggerHaptic('light');
             }
 
-            console.log('[Collision] Stuck to wall, side:', currentWallSide);
-        }
-
-        if (playerBody && otherBody.label === 'ground') {
-            currentState = STATE.GROUND;
-            canDoubleJump = true;
+            console.log('[Collision] Stuck to wall at', wallBody.position.x, 'player on', isPlayerOnLeft ? 'LEFT' : 'RIGHT', 'face');
         }
     });
 });
@@ -257,8 +292,7 @@ function resetGame() {
     score = 0;
     cameraY = 0;
     lastWallY = window.innerHeight - 200;
-    lastWallHeight = 250;
-    sideBias = -1;
+    lastWallX = 80;
     walls = [];
 
     // Spawn Ground (floor at bottom)
