@@ -3,15 +3,18 @@ import Matter from 'matter-js';
 
 // --- CONFIGURATION ---
 const CONFIG = {
-    GRAVITY: 1.2,
-    JUMP_FORCE_X: 9,
-    JUMP_FORCE_Y: -13,
+    GRAVITY: 1.0,           // Reduced from 1.2 for floatier jumps
+    JUMP_FORCE_X: 10,       // Increased for better horizontal reach
+    JUMP_FORCE_Y: -15,      // Increased for higher jumps
     WALL_WIDTH: 40,
     WALL_HEIGHT_MIN: 100,
-    WALL_HEIGHT_MAX: 300,
+    WALL_HEIGHT_MAX: 250,   // Reduced max for better spacing
     PLAYER_SIZE: 30,
-    GENERATE_AHEAD: 1000, // How far up to generate walls
-    DELETE_BELOW: 800,    // When to delete walls below camera
+    GENERATE_AHEAD: 1000,   // How far up to generate walls
+    DELETE_BELOW: 800,      // When to delete walls below camera
+    WALL_PADDING: 60,       // Keep walls away from edge
+    WALL_GAP_MIN: 150,      // Minimum vertical gap between walls
+    WALL_GAP_MAX: 250,      // Maximum vertical gap between walls
 };
 
 // --- 1. SETUP ENGINE ---
@@ -37,8 +40,10 @@ let walls: Matter.Body[] = [];
 let gameActive = false;
 let score = 0;
 let highestPoint = 0;
-let lastWallY = 0; // Tracks the height of the last generated wall
+let lastWallY = 0;       // Tracks the height of the last generated wall
+let lastWallHeight = 0;  // Track last wall's height for proper spacing
 let cameraY = 0;
+let sideBias = 1;        // Track side for zig-zag pattern (1 = right, -1 = left)
 
 // Enums for clarity
 const STATE = {
@@ -56,8 +61,8 @@ let canDoubleJump = false;
 function createPlayer(x: number, y: number) {
     return Matter.Bodies.rectangle(x, y, CONFIG.PLAYER_SIZE, CONFIG.PLAYER_SIZE, {
         friction: 0,
-        frictionAir: 0.02, // Low drag for snappy jumps
-        restitution: 0,    // No bouncing
+        frictionAir: 0.01,  // Reduced from 0.02 for snappier movement
+        restitution: 0,     // No bouncing
         chamfer: { radius: 4 }, // Rounded corners
         render: { fillStyle: '#e74c3c' },
         label: 'player'
@@ -74,29 +79,26 @@ function createWall(x: number, y: number, height: number, isBounce = false) {
     });
 }
 
-// Level Generator (The "Dual-Block-Dodge" Logic adapted for Physics)
+// Level Generator with Zig-Zag Pattern
 function generateLevelStep() {
-    const spawnLimit = cameraY - CONFIG.GENERATE_AHEAD; // Remember Y goes DOWN as you go UP in Canvas usually, but Matter.js is standard cartesian? 
-    // Actually in Matter.js/Canvas: Y increases DOWNWARDS. 
-    // So "Up" is negative Y.
+    const spawnLimit = cameraY - CONFIG.GENERATE_AHEAD;
 
     // While the last wall is below the spawn limit (meaning we need more walls above)
     while (lastWallY > spawnLimit) {
-        const nextY = lastWallY - (150 + Math.random() * 50); // Move UP by 150-200px
+        // Calculate proper vertical gap based on previous wall height
+        const gap = CONFIG.WALL_GAP_MIN + Math.random() * (CONFIG.WALL_GAP_MAX - CONFIG.WALL_GAP_MIN);
+        const nextY = lastWallY - (lastWallHeight / 2) - gap; // Account for wall height
 
-        // Cone Algorithm: Ensure next wall is reachable
-        // We alternate sides roughly, or pick random X within jump distance
-        const screenCenter = window.innerWidth / 2;
-        const isLeft = Math.random() > 0.5;
+        // Zig-zag pattern: alternate sides
+        sideBias *= -1;
 
-        // Spawn mainly on sides to encourage wall jumping
         let nextX;
-        if (Math.random() > 0.3) {
-            // Side walls
-            nextX = isLeft ? 50 : window.innerWidth - 50;
+        if (sideBias === -1) {
+            // Left side
+            nextX = CONFIG.WALL_PADDING;
         } else {
-            // Middle blocks (harder)
-            nextX = screenCenter + (Math.random() * 200 - 100);
+            // Right side
+            nextX = window.innerWidth - CONFIG.WALL_PADDING;
         }
 
         const height = CONFIG.WALL_HEIGHT_MIN + Math.random() * (CONFIG.WALL_HEIGHT_MAX - CONFIG.WALL_HEIGHT_MIN);
@@ -104,10 +106,12 @@ function generateLevelStep() {
 
         walls.push(newWall);
         Matter.World.add(world, newWall);
+
         lastWallY = nextY;
+        lastWallHeight = height;
     }
 
-    // Cleanup Logic (Dual-Block-Dodge style)
+    // Cleanup Logic - remove walls far below camera
     walls = walls.filter(wall => {
         if (wall.position.y > cameraY + CONFIG.DELETE_BELOW) {
             Matter.World.remove(world, wall);
@@ -207,14 +211,30 @@ Matter.Events.on(engine, 'collisionStart', (event) => {
             currentState = STATE.WALL;
             canDoubleJump = true; // Reset double jump
 
-            // Determine side
+            // Improved snapping logic - ensure no overlap
+            const halfWall = CONFIG.WALL_WIDTH / 2;
+            const halfPlayer = CONFIG.PLAYER_SIZE / 2;
+
             if (playerBody.position.x < otherBody.position.x) {
-                currentWallSide = -1; // Left of wall
-                Matter.Body.setPosition(playerBody, { x: otherBody.position.x - CONFIG.WALL_WIDTH / 2 - CONFIG.PLAYER_SIZE / 2, y: playerBody.position.y });
+                currentWallSide = -1; // Player is on the LEFT side of the wall
+                Matter.Body.setPosition(playerBody, {
+                    x: otherBody.position.x - halfWall - halfPlayer - 1, // Extra 1px gap
+                    y: playerBody.position.y
+                });
             } else {
-                currentWallSide = 1; // Right of wall
-                Matter.Body.setPosition(playerBody, { x: otherBody.position.x + CONFIG.WALL_WIDTH / 2 + CONFIG.PLAYER_SIZE / 2, y: playerBody.position.y });
+                currentWallSide = 1; // Player is on the RIGHT side of the wall
+                Matter.Body.setPosition(playerBody, {
+                    x: otherBody.position.x + halfWall + halfPlayer + 1, // Extra 1px gap
+                    y: playerBody.position.y
+                });
             }
+
+            // Haptic feedback on wall stick
+            if (typeof (window as any).triggerHaptic === 'function') {
+                (window as any).triggerHaptic('light');
+            }
+
+            console.log('[Collision] Stuck to wall, side:', currentWallSide);
         }
 
         if (playerBody && otherBody.label === 'ground') {
@@ -236,7 +256,9 @@ function resetGame() {
 
     score = 0;
     cameraY = 0;
-    lastWallY = window.innerHeight - 200; // Start generating walls above this
+    lastWallY = window.innerHeight - 200;
+    lastWallHeight = 250;
+    sideBias = -1;
     walls = [];
 
     // Spawn Ground (floor at bottom)
