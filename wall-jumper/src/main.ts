@@ -1,24 +1,164 @@
+
 import './style.css';
 import Matter from 'matter-js';
 
 // --- CONFIGURATION ---
 const CONFIG = {
-    GRAVITY: 0.8,           // Lower gravity gives more reaction time
-    JUMP_FORCE_X: 12,       // Strong kick to reach far walls
-    JUMP_FORCE_Y: -16,      // Good vertical height
+    GRAVITY: 0.8,
+    JUMP_ANGLE_DEG: 65,
+    JUMP_INITIAL_SPEED: 14,
+    THRUST_FORCE: 1.2,
+    THRUST_MAX_MS: 400,
+    // Air flip config
+    FLIP_ANGLE_DEG: 55,
+    FLIP_INITIAL_SPEED: 10,
+    FLIP_THRUST_FORCE: 1.1,
+    FLIP_THRUST_MAX_MS: 300,
     WALL_WIDTH: 40,
-    WALL_HEIGHT: 250,
-    WALL_HEIGHT_MIN: 100,
-    WALL_HEIGHT_MAX: 250,
     PLAYER_SIZE: 30,
-    GENERATE_AHEAD: 1000,   // How far up to generate walls
-    DELETE_BELOW: 800,      // When to delete walls below camera
-    WALL_PADDING: 60,       // Keep walls away from edge
-    WALL_GAP_MIN: 50,      // Minimum vertical gap between walls
-    WALL_GAP_MAX: 150,      // Maximum vertical gap between walls
+    GENERATE_AHEAD_SCREENS: 0.9,
+    DELETE_BELOW_SCREENS: 1.25,
+    WALL_PADDING: 60,
+    FLOOR_HEIGHT: 70,
+    BOUNDARY_THICKNESS: 80,
+    MAX_WALLS_PER_CALL: 1,
+    ACTIVE_WALL_CAP: 24
 };
 
-// --- 1. SETUP ENGINE ---
+// --- COLUMN SYSTEM (5 columns) ---
+const NUM_COLUMNS = 5;
+const COLUMN_MARGIN = 0.08; // 8% margin on each side
+
+function getColumnX(col: number): number {
+    const w = window.innerWidth;
+    const usableWidth = w * (1 - 2 * COLUMN_MARGIN);
+    const colWidth = usableWidth / (NUM_COLUMNS - 1);
+    return w * COLUMN_MARGIN + col * colWidth;
+}
+
+// Wall height variants
+type WallSize = 'short' | 'medium' | 'tall';
+
+const WALL_HEIGHTS: Record<WallSize, { min: number; max: number }> = {
+    'short': { min: 100, max: 160 },
+    'medium': { min: 180, max: 260 },
+    'tall': { min: 280, max: 380 },
+};
+
+// --- PATTERN SYSTEM ---
+type PatternWall = {
+    column: number;      // 0-4 absolute column
+    relativeY: number;   // Y offset from pattern start (negative = up)
+    height: WallSize;
+};
+
+type Pattern = {
+    name: string;
+    walls: PatternWall[];
+    entryColumn: number;  // Which column player enters from
+    exitColumn: number;   // Which column player exits to
+    exitY: number;        // Y offset of exit point (negative)
+};
+
+// Hand-crafted patterns - each is guaranteed playable
+const PATTERNS: Pattern[] = [
+    {
+        name: 'zigzag',
+        walls: [
+            { column: 1, relativeY: 0, height: 'medium' },
+            { column: 3, relativeY: -160, height: 'medium' },
+            { column: 1, relativeY: -320, height: 'medium' },
+        ],
+        entryColumn: 1,
+        exitColumn: 1,
+        exitY: -320,
+    },
+    {
+        name: 'staircase-right',
+        walls: [
+            { column: 1, relativeY: 0, height: 'short' },
+            { column: 2, relativeY: -140, height: 'short' },
+            { column: 3, relativeY: -280, height: 'medium' },
+        ],
+        entryColumn: 1,
+        exitColumn: 3,
+        exitY: -280,
+    },
+    {
+        name: 'staircase-left',
+        walls: [
+            { column: 3, relativeY: 0, height: 'short' },
+            { column: 2, relativeY: -140, height: 'short' },
+            { column: 1, relativeY: -280, height: 'medium' },
+        ],
+        entryColumn: 3,
+        exitColumn: 1,
+        exitY: -280,
+    },
+    {
+        name: 'wide-cross',
+        walls: [
+            { column: 0, relativeY: 0, height: 'tall' },
+            { column: 4, relativeY: -180, height: 'tall' },
+        ],
+        entryColumn: 0,
+        exitColumn: 4,
+        exitY: -180,
+    },
+    {
+        name: 'center-hop',
+        walls: [
+            { column: 1, relativeY: 0, height: 'medium' },
+            { column: 2, relativeY: -150, height: 'medium' },
+            { column: 3, relativeY: -300, height: 'medium' },
+        ],
+        entryColumn: 1,
+        exitColumn: 3,
+        exitY: -300,
+    },
+    {
+        name: 'flip-required',
+        walls: [
+            { column: 1, relativeY: 0, height: 'medium' },
+            { column: 1, relativeY: -200, height: 'medium' },
+            { column: 3, relativeY: -360, height: 'medium' },
+        ],
+        entryColumn: 1,
+        exitColumn: 3,
+        exitY: -360,
+    },
+    {
+        name: 'simple-alternate',
+        walls: [
+            { column: 1, relativeY: 0, height: 'medium' },
+            { column: 3, relativeY: -160, height: 'medium' },
+        ],
+        entryColumn: 1,
+        exitColumn: 3,
+        exitY: -160,
+    },
+    {
+        name: 'simple-alternate-rev',
+        walls: [
+            { column: 3, relativeY: 0, height: 'medium' },
+            { column: 1, relativeY: -160, height: 'medium' },
+        ],
+        entryColumn: 3,
+        exitColumn: 1,
+        exitY: -160,
+    },
+];
+
+// Chunk: contains 2 patterns
+type Chunk = {
+    pattern1: Pattern;
+    pattern2: Pattern;
+    baseY: number;
+};
+
+// --- SETUP ---
+const canvas = document.querySelector('#game-canvas') as HTMLCanvasElement;
+
 const engine = Matter.Engine.create();
 engine.gravity.y = CONFIG.GRAVITY;
 const world = engine.world;
@@ -26,116 +166,174 @@ const world = engine.world;
 const render = Matter.Render.create({
     element: document.body,
     engine: engine,
+    canvas: canvas,
     options: {
         width: window.innerWidth,
         height: window.innerHeight,
         wireframes: false,
-        background: '#2c3e50',
-        hasBounds: true // Crucial for camera tracking
+        background: '#111',
+        hasBounds: true
     }
 });
 
-// --- 2. GAME STATE ---
-let player: Matter.Body;
+// --- STATE ---
+let player: Matter.Body | null = null;
 let walls: Matter.Body[] = [];
 let gameActive = false;
 let score = 0;
 let highestPoint = 0;
-let lastWallY = window.innerHeight - 100;
-let lastWallX = 80;
+let startY = 0;
+
+// Camera / Level Gen
 let cameraY = 0;
+let currentColumn = 1;  // Current column player is expected to be at
+let currentY = 0;       // Current Y position for generation
+let wallsGenerated = 0;
 
-// Wall sliding state
-let currentWallSide = 0; // -1 for left wall, 1 for right wall, 0 for none
+// Physics State
 let isWallSliding = false;
+let currentWallSide = 0; // -1 Left, 1 Right
 let canJump = false;
+let wallJumpLockout = 0; // Lockout timer
 
-// --- 3. GAME OBJECTS ---
+let isThrusting = false;
+let thrustStartMs = 0;
+let hasJumpedThisPress = false;
+let thrustDirX = 0;
+let thrustDirY = -1;
 
-// Player Factory
+// Air flip state
+let canAirFlip = false;
+let hasUsedAirFlip = false;
+let lastJumpDir = 0; // -1 = left, 1 = right
+let isFlipThrust = false;
+
+// --- FACTORIES ---
+
 function createPlayer(x: number, y: number) {
     return Matter.Bodies.rectangle(x, y, CONFIG.PLAYER_SIZE, CONFIG.PLAYER_SIZE, {
         label: 'player',
-        restitution: 0,      // No bounce
-        friction: 0.8,       // High friction for grip
-        frictionAir: 0.02,   // Light air resistance
-        inertia: Infinity,   // IMPORTANT: Prevents rotation (rolling off the wall)
-        render: { fillStyle: '#e74c3c' }
+        restitution: 0,
+        friction: 0.8,
+        frictionAir: 0.02,
+        inertia: Infinity,
+        render: { fillStyle: '#fff' }
     });
 }
 
-// Wall Factory
-// Wall Factory
-function createWall(x: number, y: number, height: number, isBounce = false) {
+function createWall(x: number, y: number, height: number, color: string) {
     return Matter.Bodies.rectangle(x, y, CONFIG.WALL_WIDTH, height, {
         isStatic: true,
-        label: isBounce ? 'bounce-wall' : 'wall',
-        restitution: 0, // IMPORTANT: Walls must not be bouncy
-        render: { fillStyle: isBounce ? '#3498db' : '#2ecc71' }
+        label: 'wall',
+        restitution: 0,
+        render: { fillStyle: color }
     });
 }
 
-// Level Generator - Floating Walls with Random X within Screen Halves
-function generateLevelStep() {
-    // Only generate if we need more walls above the camera
-    const spawnLimit = cameraY - CONFIG.GENERATE_AHEAD;
+function clamp(value: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, value));
+}
 
-    // Only spawn ONE wall if we need one
-    if (lastWallY > spawnLimit) {
-        const screenWidth = window.innerWidth;
-        const center = screenWidth / 2;
+function getWallHeight(size: WallSize): number {
+    const range = WALL_HEIGHTS[size];
+    return range.min + Math.random() * (range.max - range.min);
+}
 
-        // 1. Determine which "half" of the screen to spawn on
-        // If the last wall was on the Left, spawn this one on the Right (and vice versa)
-        const isLastWallLeft = lastWallX < center;
+// --- LEVEL GENERATION (Chunk-Based) ---
 
-        let minX, maxX;
+const MAX_COLUMN_JUMP = 2; // Can jump ±2 columns
 
-        if (isLastWallLeft) {
-            // Spawn on the RIGHT half
-            minX = center + 50;          // 50px buffer from center
-            maxX = screenWidth - 80;      // 80px buffer from right edge
-        } else {
-            // Spawn on the LEFT half
-            minX = 80;                    // 80px buffer from left edge
-            maxX = center - 50;           // 50px buffer from center
+function pickRandomPattern(): Pattern {
+    return PATTERNS[Math.floor(Math.random() * PATTERNS.length)];
+}
+
+function mirrorPattern(pattern: Pattern): Pattern {
+    return {
+        ...pattern,
+        name: pattern.name + '-mirrored',
+        walls: pattern.walls.map(w => ({
+            ...w,
+            column: (NUM_COLUMNS - 1) - w.column,
+        })),
+        entryColumn: (NUM_COLUMNS - 1) - pattern.entryColumn,
+        exitColumn: (NUM_COLUMNS - 1) - pattern.exitColumn,
+    };
+}
+
+function pickPatternForEntry(entryCol: number): Pattern {
+    // Find patterns that can be reached from entryCol
+    const candidates: Pattern[] = [];
+    
+    for (const p of PATTERNS) {
+        // Check if pattern entry is reachable
+        if (Math.abs(p.entryColumn - entryCol) <= MAX_COLUMN_JUMP) {
+            candidates.push(p);
         }
-
-        // 2. Randomize X within that calculated range
-        const nextX = Math.random() * (maxX - minX) + minX;
-
-        // 3. Vertical Spacing (Gap)
-        const gap = 120 + Math.random() * 40;
-        const nextY = lastWallY - gap;
-
-        // 4. Create the Floating Wall Body
-        const wallHeight = 200 + Math.random() * 100;
-        const wallColor = isLastWallLeft ? '#00aaff' : '#ff0055'; // Blue for Right, Red for Left
-
-        const wall = Matter.Bodies.rectangle(
-            nextX,
-            nextY,
-            CONFIG.WALL_WIDTH,
-            wallHeight,
-            {
-                isStatic: true,
-                label: 'wall',
-                restitution: 0,  // CRITICAL: Prevents bouncing
-                render: { fillStyle: wallColor }
-            }
-        );
-
-        walls.push(wall);
-        Matter.World.add(engine.world, wall);
-
-        // 5. Update state for the next generation cycle
-        lastWallY = nextY;
-        lastWallX = nextX;
+        // Also check mirrored version
+        const mirrored = mirrorPattern(p);
+        if (Math.abs(mirrored.entryColumn - entryCol) <= MAX_COLUMN_JUMP) {
+            candidates.push(mirrored);
+        }
     }
+    
+    if (candidates.length === 0) {
+        // Fallback: use simple-alternate which works from any position
+        return PATTERNS.find(p => p.name === 'simple-alternate') || PATTERNS[0];
+    }
+    
+    return candidates[Math.floor(Math.random() * candidates.length)];
+}
 
-    // Cleanup - remove walls far below camera
+function spawnPattern(pattern: Pattern, baseY: number): void {
+    const colors = ['#FF0055', '#00AAFF', '#55FF00', '#FFCC00'];
+    
+    for (const wallDef of pattern.walls) {
+        const x = getColumnX(wallDef.column);
+        const y = baseY + wallDef.relativeY;
+        const height = getWallHeight(wallDef.height);
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        
+        const wall = createWall(x, y, height, color);
+        walls.push(wall);
+        Matter.World.add(world, wall);
+        wallsGenerated++;
+    }
+}
+
+function generateChunk(): void {
+    // Pattern 1
+    const pattern1 = pickPatternForEntry(currentColumn);
+    spawnPattern(pattern1, currentY);
+    
+    // Update position after pattern 1
+    const exitY1 = currentY + pattern1.exitY;
+    const exitCol1 = pattern1.exitColumn;
+    
+    // Transition gap (150px between patterns)
+    const transitionGap = 150;
+    const pattern2BaseY = exitY1 - transitionGap;
+    
+    // Pattern 2
+    const pattern2 = pickPatternForEntry(exitCol1);
+    spawnPattern(pattern2, pattern2BaseY);
+    
+    // Update global state for next chunk
+    currentColumn = pattern2.exitColumn;
+    currentY = pattern2BaseY + pattern2.exitY - transitionGap;
+}
+
+function generateLevelStep() {
+    const h = window.innerHeight;
+    const spawnLimit = cameraY - h * CONFIG.GENERATE_AHEAD_SCREENS;
+    
+    // Generate chunks until we're ahead enough
+    while (currentY > spawnLimit && walls.length < CONFIG.ACTIVE_WALL_CAP) {
+        generateChunk();
+    }
+    
+    // Cleanup old walls
     walls = walls.filter(wall => {
-        if (wall.position.y > cameraY + CONFIG.DELETE_BELOW) {
+        if (wall.position.y > cameraY + h * CONFIG.DELETE_BELOW_SCREENS) {
             Matter.World.remove(world, wall);
             return false;
         }
@@ -143,329 +341,335 @@ function generateLevelStep() {
     });
 }
 
-// --- 4. INPUT & PHYSICS LOGIC ---
-
-const handleJump = () => {
-    if (!player) return;
-
-    if (canJump) {
-        // --- WALL JUMP LOGIC ---
-        if (isWallSliding) {
-            // Logic: Jump AWAY from the wall.
-            // If I am on the Left (-1), I want to kick Left (-1) ??? 
-            // WAIT - The user's logic says: "If I am on the Left (-1), I want to kick Left (-1)."
-            // BUT standard physics would kick RIGHT if on left wall.
-            // Let's re-read the user request carefully.
-
-            // User Request Text:
-            // "Logic: Jump AWAY from the wall.
-            // If I am on the Left (-1), I want to kick Left (-1).
-            // If I am on the Right (1), I want to kick Right (1).
-            // jumpX = CONFIG.JUMP_FORCE_X * jumpDirection;"
-
-            // This is contradictory to "Jump AWAY". If on Left wall (-1), kicking Left (-1) pushes you further left (into/through wall or just same side).
-            // Typically: Left Wall -> Kick Right (+1). Right Wall -> Kick Left (-1).
-
-            // HOWEVER, the user's snippet explicitly uses `jumpDirection = currentWallSide`.
-            // Let's look at how `currentWallSide` is calculated.
-            // `const isPlayerOnLeft = playerBody.position.x < wallBody.position.x;`
-            // `currentWallSide = isPlayerOnLeft ? -1 : 1;`
-
-            // If Player is Left of Wall (Side -1):
-            // We want to jump LEFT (away from wall? No, wall is to the right). 
-            // Wait, if player X < wall X, player is on the LEFT of the wall. The wall is to the RIGHT.
-            // So jumping LEFT (-1) is jumping AWAY from the wall.
-            // YES. This makes sense. The player is on the LEFT side of the wall. To jump away, they must go LEFT.
-
-            // So Jump Direction = Current Wall Side.
-
-            const jumpDirection = currentWallSide;
-
-            Matter.Body.setVelocity(player, {
-                x: CONFIG.JUMP_FORCE_X * jumpDirection, // Kick away horizontally
-                y: CONFIG.JUMP_FORCE_Y                  // Jump up
-            });
-
-            // Unlock the player immediately so they don't get "stuck" for 1 frame
-            isWallSliding = false;
-        }
-        // --- NORMAL JUMP LOGIC (Optional / Start of game) ---
-        else {
-            Matter.Body.setVelocity(player, {
-                x: 0,
-                y: CONFIG.JUMP_FORCE_Y
-            });
-        }
-
-        canJump = false; // Prevent spamming jump
-    }
-};
-
-// Hook up the listeners
-window.addEventListener('mousedown', handleJump);
-window.addEventListener('touchstart', (e) => {
-    e.preventDefault();
-    handleJump();
-}, { passive: false });
-
-// --- COLLISION HANDLING (Wall Sliding Physics) ---
-
-Matter.Events.on(engine, 'collisionActive', (event) => {
-    event.pairs.forEach((pair) => {
-        const bodyA = pair.bodyA;
-        const bodyB = pair.bodyB;
-
-        let playerBody: Matter.Body | null = null;
-        let wallBody: Matter.Body | null = null;
-
-        // 1. Identify Player and Wall
-        if (bodyA.label === 'player' && bodyB.label === 'wall') {
-            playerBody = bodyA;
-            wallBody = bodyB;
-        } else if (bodyB.label === 'player' && bodyA.label === 'wall') {
-            playerBody = bodyB;
-            wallBody = bodyA;
-        }
-
-        if (playerBody && wallBody) {
-            isWallSliding = true;
-            canJump = true; // Allow jumping again
-
-            // 2. Determine Wall Side
-            // If player X < wall X, player is on the Left (-1)
-            const isPlayerOnLeft = playerBody.position.x < wallBody.position.x;
-            currentWallSide = isPlayerOnLeft ? -1 : 1;
-
-            // 2. FORCE THE GRIP (Kill X Velocity)
-            // Push player slightly INTO the wall to ensure contact remains
-
-            // 3. FORCE THE SLIDE (Cap Y Velocity)
-            const slideSpeed = 2;
-
-            Matter.Body.setVelocity(playerBody, {
-                x: 0, // Stop horizontal movement so we stick
-                y: playerBody.velocity.y > slideSpeed ? slideSpeed : playerBody.velocity.y
-            });
-        }
-
-        // Ground collision (keep simple)
-        if ((bodyA.label === 'player' && bodyB.label === 'ground') ||
-            (bodyB.label === 'player' && bodyA.label === 'ground')) {
-            canJump = true;
-            isWallSliding = false;
-            currentWallSide = 0;
-        }
-    });
-});
-
-// Reset state when leaving the wall
-Matter.Events.on(engine, 'collisionEnd', (event) => {
-    event.pairs.forEach((pair) => {
-        const labels = [pair.bodyA.label, pair.bodyB.label];
-        if (labels.includes('player') && labels.includes('wall')) {
-            isWallSliding = false;
-            currentWallSide = 0;
-        }
-    });
-});
-
-// --- 5. GAME LOOP ---
+// --- GAME LOGIC ---
 
 function resetGame() {
-    // Clear World
     Matter.World.clear(world, false);
-    engine.events = {}; // Nuke events to prevent duplication, then re-add collision
-
-    // Re-add Collision (since we cleared events)
-    // Actually, World.clear with keepStatic=false wipes bodies. Events stay on engine.
 
     score = 0;
     cameraY = 0;
-    lastWallY = window.innerHeight - 200;
-    lastWallX = 80;
     walls = [];
+    wallJumpLockout = 0;
+    wallsGenerated = 0;
 
-    // Spawn Ground (floor at bottom)
-    const ground = Matter.Bodies.rectangle(window.innerWidth / 2, window.innerHeight - 10, window.innerWidth, 40, {
-        isStatic: true, label: 'ground', render: { fillStyle: '#95a5a6' }
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const floorTopY = h - CONFIG.FLOOR_HEIGHT;
+
+    // Ground
+    const ground = Matter.Bodies.rectangle(w / 2, h - CONFIG.FLOOR_HEIGHT / 2, w + 2000, CONFIG.FLOOR_HEIGHT, {
+        isStatic: true, label: 'ground', render: { fillStyle: '#333' }
     });
     Matter.World.add(world, ground);
 
-    // Spawn starting LEFT wall (player will cling to this)
-    const startingWall = createWall(CONFIG.WALL_WIDTH / 2, window.innerHeight - 150, 250);
-    walls.push(startingWall);
-    Matter.World.add(world, startingWall);
+    const boundaryHeight = 200000;
+    const boundaryCenterY = -50000;
+    const leftBoundary = Matter.Bodies.rectangle(-CONFIG.BOUNDARY_THICKNESS / 2, boundaryCenterY, CONFIG.BOUNDARY_THICKNESS, boundaryHeight, {
+        isStatic: true, label: 'boundary', render: { visible: false }
+    });
+    const rightBoundary = Matter.Bodies.rectangle(w + CONFIG.BOUNDARY_THICKNESS / 2, boundaryCenterY, CONFIG.BOUNDARY_THICKNESS, boundaryHeight, {
+        isStatic: true, label: 'boundary', render: { visible: false }
+    });
+    Matter.World.add(world, [leftBoundary, rightBoundary]);
 
-    // Spawn Player on the LEFT wall (resting against it, on the floor)
-    const playerX = CONFIG.WALL_WIDTH + CONFIG.PLAYER_SIZE / 2 + 2; // Just to the right of the wall
-    const playerY = window.innerHeight - 30 - CONFIG.PLAYER_SIZE / 2; // On the floor
-    player = createPlayer(playerX, playerY);
+    // Initial Walls using column system
+    const startWallHeight = 420;
+    const startWallY = floorTopY - startWallHeight / 2;
+    const startWall = createWall(getColumnX(1), startWallY, startWallHeight, '#FF0055');
+    walls.push(startWall);
+    Matter.World.add(world, startWall);
+
+    const secondWallHeight = 420;
+    const secondWallY = floorTopY - secondWallHeight / 2;
+    const secondWall = createWall(getColumnX(3), secondWallY, secondWallHeight, '#00AAFF');
+    walls.push(secondWall);
+    Matter.World.add(world, secondWall);
+
+    // Initialize chunk generation state
+    currentColumn = 1;  // Start from left column
+    currentY = startWallY - startWallHeight / 2 - 100;  // Start generating above initial walls
+
+    // Player
+    const playerSpawnX = startWall.position.x + CONFIG.WALL_WIDTH / 2 + CONFIG.PLAYER_SIZE / 2 - 1;
+    const playerSpawnY = floorTopY - CONFIG.PLAYER_SIZE / 2;
+    player = createPlayer(playerSpawnX, playerSpawnY);
     Matter.World.add(world, player);
 
-    // Set initial state - player can jump immediately
+    startY = playerSpawnY;
+
     canJump = true;
-    isWallSliding = true;  // Treat initial position as on wall
-    currentWallSide = -1;  // On left side (will jump RIGHT)
+    isWallSliding = false;
+    currentWallSide = 0;
 
-    // Player is NOT static - they can slide down if they want
-
-    // Force initial walls above
-    generateLevelStep();
-
-    console.log('[resetGame] Player spawned on left wall at', playerX, playerY);
+    // Pre-gen some walls
+    for (let i = 0; i < 3; i++) generateLevelStep();
 }
 
+function attachPhysicsEvents() {
+    // 1. Update Loop
+    Matter.Events.on(engine, 'beforeUpdate', () => {
+        if (wallJumpLockout > 0) wallJumpLockout--;
+
+        // Apply continuous thrust along jump angle while holding
+        if (isThrusting && gameActive && player) {
+            const elapsed = performance.now() - thrustStartMs;
+            const maxMs = isFlipThrust ? CONFIG.FLIP_THRUST_MAX_MS : CONFIG.THRUST_MAX_MS;
+            const thrustForce = isFlipThrust ? CONFIG.FLIP_THRUST_FORCE : CONFIG.THRUST_FORCE;
+
+            if (elapsed < maxMs) {
+                // Apply force along the jump direction
+                const forceMag = thrustForce * 0.001 * player.mass;
+                Matter.Body.applyForce(player, player.position, {
+                    x: thrustDirX * forceMag,
+                    y: thrustDirY * forceMag
+                });
+            }
+        }
+    });
+
+    // 2. Collision Active (Slide)
+    Matter.Events.on(engine, 'collisionActive', (event) => {
+        event.pairs.forEach((pair) => {
+            const labels = [pair.bodyA.label, pair.bodyB.label];
+            let playerBody = null;
+            let wallBody = null;
+
+            if (pair.bodyA.label === 'player') { playerBody = pair.bodyA; }
+            else if (pair.bodyB.label === 'player') { playerBody = pair.bodyB; }
+
+            if (pair.bodyA.label === 'wall') { wallBody = pair.bodyA; }
+            else if (pair.bodyB.label === 'wall') { wallBody = pair.bodyB; }
+
+            if (playerBody && wallBody) {
+                isWallSliding = true;
+                canJump = true;
+                hasJumpedThisPress = false;
+                canAirFlip = false;
+                hasUsedAirFlip = false;
+
+                const isWallOnLeft = wallBody.position.x < playerBody.position.x;
+                currentWallSide = isWallOnLeft ? -1 : 1;
+
+                // LOCKOUT CHECK
+                if (wallJumpLockout <= 0) {
+                    Matter.Body.setVelocity(playerBody, {
+                        x: 0,
+                        y: playerBody.velocity.y > 2 ? 2 : playerBody.velocity.y
+                    });
+                }
+            } else if (labels.includes('ground')) {
+                canJump = true;
+                isWallSliding = false;
+                hasJumpedThisPress = false;
+                canAirFlip = false;
+                hasUsedAirFlip = false;
+            }
+        });
+    });
+
+    // 3. Collision End
+    Matter.Events.on(engine, 'collisionEnd', (event) => {
+        event.pairs.forEach((pair) => {
+            const labels = [pair.bodyA.label, pair.bodyB.label];
+            if (labels.includes('player') && labels.includes('wall')) {
+                // Only reset if we are actually NOT touching any wall?
+                // For simplicity, yes.
+                isWallSliding = false;
+                currentWallSide = 0;
+            }
+        });
+    });
+}
+
+// --- INPUT ---
+function handlePressStart() {
+    if (!gameActive || !player) return;
+
+    // Check for air flip first (tap while airborne)
+    if (!canJump && canAirFlip && !hasUsedAirFlip && !hasJumpedThisPress) {
+        performAirFlip();
+        return;
+    }
+
+    if (!canJump) return;
+    if (hasJumpedThisPress) return;
+
+    // Calculate jump direction based on angle
+    const angleRad = (CONFIG.JUMP_ANGLE_DEG * Math.PI) / 180;
+    const horizontalDir = isWallSliding ? (currentWallSide === -1 ? 1 : -1) : 0;
+
+    // Set thrust direction for continuous force
+    thrustDirX = horizontalDir * Math.cos(angleRad);
+    thrustDirY = -Math.sin(angleRad);
+
+    // Apply initial velocity at the jump angle
+    const initialVelX = horizontalDir * CONFIG.JUMP_INITIAL_SPEED * Math.cos(angleRad);
+    const initialVelY = -CONFIG.JUMP_INITIAL_SPEED * Math.sin(angleRad);
+
+    Matter.Body.setVelocity(player, {
+        x: initialVelX,
+        y: initialVelY
+    });
+
+    // Start thrusting
+    isThrusting = true;
+    isFlipThrust = false;
+    thrustStartMs = performance.now();
+    hasJumpedThisPress = true;
+    canJump = false;
+
+    // Enable air flip and track direction
+    if (isWallSliding) {
+        wallJumpLockout = 10;
+        lastJumpDir = horizontalDir;
+        canAirFlip = true;
+        hasUsedAirFlip = false;
+    }
+}
+
+function performAirFlip() {
+    if (!player) return;
+
+    // Flip goes in opposite direction
+    const flipDir = -lastJumpDir;
+    const angleRad = (CONFIG.FLIP_ANGLE_DEG * Math.PI) / 180;
+
+    // Set thrust direction for flip
+    thrustDirX = flipDir * Math.cos(angleRad);
+    thrustDirY = -Math.sin(angleRad);
+
+    // Apply flip velocity
+    const flipVelX = flipDir * CONFIG.FLIP_INITIAL_SPEED * Math.cos(angleRad);
+    const flipVelY = -CONFIG.FLIP_INITIAL_SPEED * Math.sin(angleRad);
+
+    Matter.Body.setVelocity(player, {
+        x: flipVelX,
+        y: flipVelY
+    });
+
+    // Start flip thrust
+    isThrusting = true;
+    isFlipThrust = true;
+    thrustStartMs = performance.now();
+    hasJumpedThisPress = true;
+    hasUsedAirFlip = true;
+    canAirFlip = false;
+}
+
+function handlePressEnd() {
+    // Stop thrusting immediately on release
+    isThrusting = false;
+    // Reset so next tap can trigger air flip
+    hasJumpedThisPress = false;
+}
+
+window.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    handlePressStart();
+});
+
+window.addEventListener('mouseup', (e) => {
+    if (e.button !== 0) return;
+    handlePressEnd();
+});
+
+window.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    handlePressStart();
+}, { passive: false });
+
+window.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    handlePressEnd();
+}, { passive: false });
+
+window.addEventListener('touchcancel', (e) => {
+    e.preventDefault();
+    isThrusting = false;
+}, { passive: false });
+
+
+// --- MAIN LOOP ---
 function update() {
     if (!gameActive) {
         requestAnimationFrame(update);
         return;
     }
 
-    // Camera Follow (Smooth Lerp)
-    // Target is player Y - offset (to keep player near bottom 1/3 of screen)
-    const targetY = player.position.y - window.innerHeight * 0.6;
+    // Camera
+    if (player) {
+        const targetY = player.position.y - window.innerHeight * 0.6;
+        if (targetY < cameraY) {
+            cameraY += (targetY - cameraY) * 0.1;
+        }
 
-    // Only scroll UP (Negative Y), never down
-    if (targetY < cameraY) {
-        cameraY += (targetY - cameraY) * 0.1;
+        // Death
+        if (player.position.y > cameraY + window.innerHeight + 100) {
+            gameOver();
+        }
+
+        // Score
+        const climbed = Math.max(0, Math.round(startY - player.position.y));
+        if (climbed > score) score = climbed;
+
+        // Update HTML Score
+        const scoreEl = document.getElementById('score-value');
+        if (scoreEl) scoreEl.textContent = score.toString();
     }
 
-    // Update Render Bounds (The Camera)
     Matter.Render.lookAt(render, {
         min: { x: 0, y: cameraY },
         max: { x: window.innerWidth, y: cameraY + window.innerHeight }
     });
 
-    // Level Gen
     generateLevelStep();
-
-    // Check Death (Fall below camera)
-    if (player.position.y > cameraY + window.innerHeight + 100) {
-        console.log("Game Over");
-        gameActive = false;
-        document.getElementById('score').innerText = "Game Over! Click to Restart";
-    } else {
-        // Score update (height based)
-        const currentHeight = Math.abs(Math.round(player.position.y));
-        if (currentHeight > score) score = currentHeight;
-        const ui = document.getElementById('score');
-        if (ui) ui.innerText = `Height: ${score}`;
-    }
 
     requestAnimationFrame(update);
 }
 
-// --- 6. INIT ---
-// Hide the dynamically created score (we'll use the HTML one instead)
+// --- UI ---
+function gameOver() {
+    gameActive = false;
+    const finalScoreEl = document.getElementById('final-score');
+    if (finalScoreEl) finalScoreEl.textContent = score.toString();
+
+    document.getElementById('hud')?.classList.add('hidden');
+    document.getElementById('game-over')?.classList.add('active');
+}
+
 function initUI() {
-    // Connect to existing HTML elements
     const startBtn = document.getElementById('start-btn');
     const restartBtn = document.getElementById('restart-btn');
-    const startScreen = document.getElementById('start-screen');
-    const hud = document.getElementById('hud');
-    const settingsBtn = document.getElementById('settings-btn');
-    const gameOverScreen = document.getElementById('game-over');
-    const scoreValue = document.getElementById('score-value');
-    const finalScore = document.getElementById('final-score');
 
-    // Start button handler
     startBtn?.addEventListener('click', () => {
-        console.log('[UI] Start button clicked');
-        startScreen?.classList.add('hidden');
-        hud?.classList.remove('hidden');
-        settingsBtn?.classList.remove('hidden');
+        document.getElementById('start-screen')?.classList.add('hidden');
+        document.getElementById('hud')?.classList.remove('hidden');
+        document.getElementById('settings-btn')?.classList.remove('hidden');
         resetGame();
         gameActive = true;
     });
 
-    // Restart button handler
     restartBtn?.addEventListener('click', () => {
-        console.log('[UI] Restart button clicked');
-        gameOverScreen?.classList.remove('active');
-        hud?.classList.remove('hidden');
-        settingsBtn?.classList.remove('hidden');
+        document.getElementById('game-over')?.classList.remove('active');
+        document.getElementById('hud')?.classList.remove('hidden');
         resetGame();
         gameActive = true;
     });
 
-    // Settings handlers
+    // Settings (Simple Toggle)
     document.getElementById('settings-btn')?.addEventListener('click', () => {
         document.getElementById('settings-modal')?.classList.add('active');
     });
-
     document.getElementById('close-settings')?.addEventListener('click', () => {
         document.getElementById('settings-modal')?.classList.remove('active');
     });
-
-    document.getElementById('settings-modal')?.addEventListener('click', (e) => {
-        if (e.target === document.getElementById('settings-modal')) {
-            document.getElementById('settings-modal')?.classList.remove('active');
-        }
-    });
-
-    // Update score display function
-    (window as any).updateScoreUI = (newScore: number) => {
-        if (scoreValue) scoreValue.textContent = newScore.toString();
-    };
-
-    // Show game over function
-    (window as any).showGameOver = (finalScoreValue: number) => {
-        if (finalScore) finalScore.textContent = finalScoreValue.toString();
-        gameOverScreen?.classList.add('active');
-        hud?.classList.add('hidden');
-        settingsBtn?.classList.add('hidden');
-    };
 }
 
-// Override the update function's game over logic
-const originalUpdate = update;
-function updateWithUI() {
-    if (!gameActive) {
-        requestAnimationFrame(updateWithUI);
-        return;
-    }
-
-    // Camera Follow (Smooth Lerp)
-    const targetY = player.position.y - window.innerHeight * 0.6;
-
-    // Only scroll UP (Negative Y), never down
-    if (targetY < cameraY) {
-        cameraY += (targetY - cameraY) * 0.1;
-    }
-
-    // Update Render Bounds (The Camera)
-    Matter.Render.lookAt(render, {
-        min: { x: 0, y: cameraY },
-        max: { x: window.innerWidth, y: cameraY + window.innerHeight }
-    });
-
-    // Level Gen
-    generateLevelStep();
-
-
-
-    // Check Death (Fall below camera)
-    if (player.position.y > cameraY + window.innerHeight + 100) {
-        console.log("Game Over");
-        gameActive = false;
-        (window as any).showGameOver?.(score);
-    } else {
-        // Score update (height based)
-        const currentHeight = Math.abs(Math.round(player.position.y));
-        if (currentHeight > score) {
-            score = currentHeight;
-            (window as any).updateScoreUI?.(score);
-        }
-    }
-
-    requestAnimationFrame(updateWithUI);
-}
-
-// Initialize
+// --- BOOTSTRAP ---
 Matter.Runner.run(Matter.Runner.create(), engine);
 Matter.Render.run(render);
-initUI();
 
-console.log('[WallJumper] Game initialized, waiting for start...');
-// Don't start the game automatically - wait for user to click PLAY
-updateWithUI();
+attachPhysicsEvents();
+initUI();
+// Start loop but it will pause if !gameActive
+update();
