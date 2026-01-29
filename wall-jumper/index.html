@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Wall Jumper</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      touch-action: none;
+      font-family: 'Outfit', sans-serif;
+      background: #0f0f1a;
+    }
+
+    canvas {
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* Start Screen */
+    #start-screen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      z-index: 100;
+    }
+
+    .title-container {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+
+    .game-title {
+      font-size: 64px;
+      font-weight: 800;
+      color: #fff;
+      text-shadow: 0 0 40px rgba(0, 212, 255, 0.5), 0 4px 0 #00a8cc;
+      letter-spacing: 2px;
+      margin-bottom: 10px;
+    }
+
+    .game-subtitle {
+      font-size: 18px;
+      color: rgba(255, 255, 255, 0.6);
+      font-weight: 400;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+    }
+
+    .start-btn {
+      width: 200px;
+      height: 60px;
+      border: none;
+      border-radius: 30px;
+      background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+      color: white;
+      font-family: 'Outfit', sans-serif;
+      font-size: 22px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 8px 25px rgba(0, 212, 255, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .start-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 35px rgba(0, 212, 255, 0.5), inset 0 1px 0 rgba(255,255,255,0.2);
+    }
+
+    .start-btn:active {
+      transform: translateY(1px);
+      box-shadow: 0 4px 15px rgba(0, 212, 255, 0.3);
+    }
+
+    .instructions {
+      margin-top: 40px;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 14px;
+    }
+
+    .instructions span {
+      display: block;
+      margin: 5px 0;
+    }
+
+    /* HUD */
+    #hud {
+      position: absolute;
+      top: 45px;
+      left: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      z-index: 50;
+      pointer-events: none;
+    }
+
+    @media (pointer: coarse) {
+      #hud {
+        top: 120px;
+      }
+    }
+
+    .score-display {
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(10px);
+      border-radius: 25px;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .score-icon {
+      width: 24px;
+      height: 24px;
+      background: linear-gradient(135deg, #ffd700 0%, #ffaa00 100%);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .score-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: white;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+
+    /* Settings Button */
+    #settings-btn {
+      position: absolute;
+      top: 45px;
+      right: 20px;
+      width: 50px;
+      height: 50px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(10px);
+      cursor: pointer;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s ease, background 0.15s ease;
+    }
+
+    @media (pointer: coarse) {
+      #settings-btn {
+        top: 120px;
+      }
+    }
+
+    #settings-btn:hover {
+      background: rgba(0, 0, 0, 0.7);
+      transform: scale(1.05);
+    }
+
+    #settings-btn:active {
+      transform: scale(0.95);
+    }
+
+    .gear-icon {
+      width: 24px;
+      height: 24px;
+      fill: white;
+    }
+
+    /* Settings Modal */
+    #settings-modal {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(5px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s ease, visibility 0.2s ease;
+    }
+
+    #settings-modal.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .settings-panel {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      border-radius: 20px;
+      padding: 30px;
+      min-width: 280px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .settings-title {
+      font-size: 24px;
+      font-weight: 700;
+      color: white;
+      text-align: center;
+      margin-bottom: 25px;
+    }
+
+    .setting-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 15px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .setting-row:last-child {
+      border-bottom: none;
+    }
+
+    .setting-label {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: white;
+      font-size: 18px;
+    }
+
+    .setting-icon {
+      font-size: 24px;
+    }
+
+    .toggle-switch {
+      width: 56px;
+      height: 32px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 16px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .toggle-switch.active {
+      background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+    }
+
+    .toggle-knob {
+      width: 26px;
+      height: 26px;
+      background: white;
+      border-radius: 50%;
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      transition: transform 0.2s ease;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+    }
+
+    .toggle-switch.active .toggle-knob {
+      transform: translateX(24px);
+    }
+
+    .close-settings {
+      width: 100%;
+      height: 50px;
+      margin-top: 25px;
+      border: none;
+      border-radius: 25px;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      font-family: 'Outfit', sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .close-settings:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    /* Game Over Overlay */
+    #game-over {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(10px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 150;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.3s ease, visibility 0.3s ease;
+    }
+
+    #game-over.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .game-over-title {
+      font-size: 48px;
+      font-weight: 800;
+      color: #ff4757;
+      text-shadow: 0 0 30px rgba(255, 71, 87, 0.5);
+      margin-bottom: 20px;
+    }
+
+    .final-score-label {
+      font-size: 18px;
+      color: rgba(255, 255, 255, 0.6);
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      margin-bottom: 10px;
+    }
+
+    .final-score-value {
+      font-size: 72px;
+      font-weight: 800;
+      color: white;
+      text-shadow: 0 0 40px rgba(0, 212, 255, 0.5);
+      margin-bottom: 40px;
+    }
+
+    .restart-btn {
+      width: 200px;
+      height: 60px;
+      border: none;
+      border-radius: 30px;
+      background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+      color: white;
+      font-family: 'Outfit', sans-serif;
+      font-size: 20px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 8px 25px rgba(0, 212, 255, 0.4);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .restart-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 35px rgba(0, 212, 255, 0.5);
+    }
+
+    .restart-btn:active {
+      transform: translateY(1px);
+    }
+
+    /* Floating particles animation for start screen */
+    .particle {
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      background: rgba(0, 212, 255, 0.6);
+      border-radius: 50%;
+      animation: float 8s infinite ease-in-out;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0) translateX(0); opacity: 0.6; }
+      50% { transform: translateY(-100px) translateX(20px); opacity: 0.2; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- Start Screen -->
+  <div id="start-screen">
+    <div class="title-container">
+      <h1 class="game-title">WALL JUMPER</h1>
+      <p class="game-subtitle">Climb as high as you can</p>
+    </div>
+    <button class="start-btn" id="start-btn">PLAY</button>
+    <div class="instructions">
+      <span>Tap or Click to jump</span>
+      <span>Avoid spikes, collect coins</span>
+    </div>
+  </div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="score-display">
+      <div class="score-icon"></div>
+      <span class="score-value" id="score-value">0</span>
+    </div>
+  </div>
+
+  <!-- Settings Button -->
+  <button id="settings-btn" class="hidden">
+    <svg class="gear-icon" viewBox="0 0 24 24">
+      <path d="M12 15.5A3.5 3.5 0 0 1 8.5 12 3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5 3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.64.07-.97 0-.33-.03-.66-.07-1l2.11-1.63c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.31-.61-.22l-2.49 1c-.52-.39-1.06-.73-1.69-.98l-.37-2.65A.506.506 0 0 0 14 2h-4c-.25 0-.46.18-.5.42l-.37 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.22-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64L4.57 11c-.04.34-.07.67-.07 1 0 .33.03.65.07.97l-2.11 1.66c-.19.15-.25.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1.01c.52.4 1.06.74 1.69.99l.37 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.63-.26 1.17-.59 1.69-.99l2.49 1.01c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.66Z"/>
+    </svg>
+  </button>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal">
+    <div class="settings-panel">
+      <h2 class="settings-title">Settings</h2>
+      <div class="setting-row">
+        <div class="setting-label">
+          <span class="setting-icon">🎵</span>
+          <span>Music</span>
+        </div>
+        <div class="toggle-switch active" id="toggle-music">
+          <div class="toggle-knob"></div>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">
+          <span class="setting-icon">🔊</span>
+          <span>Sound FX</span>
+        </div>
+        <div class="toggle-switch active" id="toggle-fx">
+          <div class="toggle-knob"></div>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-label">
+          <span class="setting-icon">📳</span>
+          <span>Haptics</span>
+        </div>
+        <div class="toggle-switch active" id="toggle-haptics">
+          <div class="toggle-knob"></div>
+        </div>
+      </div>
+      <button class="close-settings" id="close-settings">Done</button>
+    </div>
+  </div>
+
+  <!-- Game Over Overlay -->
+  <div id="game-over">
+    <h2 class="game-over-title">GAME OVER</h2>
+    <p class="final-score-label">Your Score</p>
+    <p class="final-score-value" id="final-score">0</p>
+    <button class="restart-btn" id="restart-btn">PLAY AGAIN</button>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
