@@ -3,13 +3,13 @@ import Matter from 'matter-js';
 
 // --- CONFIGURATION ---
 const CONFIG = {
-    GRAVITY: 0.8,           // Lower gravity for more "air time"
-    JUMP_FORCE_X: 12,       // Stronger push off the wall
-    JUMP_FORCE_Y: -18,     // Increased for higher jumps
-    WALL_WIDTH: 30,
-    WALL_HEIGHT: 300,
+    GRAVITY: 0.8,           // Lower gravity gives more reaction time
+    JUMP_FORCE_X: 12,       // Strong kick to reach far walls
+    JUMP_FORCE_Y: -16,      // Good vertical height
+    WALL_WIDTH: 40,
+    WALL_HEIGHT: 250,
     WALL_HEIGHT_MIN: 100,
-    WALL_HEIGHT_MAX: 250,   // Reduced max for better spacing
+    WALL_HEIGHT_MAX: 250,
     PLAYER_SIZE: 30,
     GENERATE_AHEAD: 1000,   // How far up to generate walls
     DELETE_BELOW: 800,      // When to delete walls below camera
@@ -42,40 +42,36 @@ let gameActive = false;
 let score = 0;
 let highestPoint = 0;
 let lastWallY = window.innerHeight - 100;
-let lastWallX = 80; // Track X for floating walls (start on left)
+let lastWallX = 80;
 let cameraY = 0;
 
-// Enums for clarity
-const STATE = {
-    AIR: 'AIR',
-    WALL: 'WALL',
-    GROUND: 'GROUND'
-};
-let currentState = STATE.GROUND;
-let currentWallSide = 0; // -1 for left face of wall, 1 for right face
-let canDoubleJump = false;
+// Wall sliding state
+let currentWallSide = 0; // -1 for left wall, 1 for right wall, 0 for none
+let isWallSliding = false;
+let canJump = false;
 
 // --- 3. GAME OBJECTS ---
 
 // Player Factory
 function createPlayer(x: number, y: number) {
     return Matter.Bodies.rectangle(x, y, CONFIG.PLAYER_SIZE, CONFIG.PLAYER_SIZE, {
-        friction: 0,
-        frictionAir: 0.01,  // Reduced from 0.02 for snappier movement
-        restitution: 0,     // No bouncing
-        chamfer: { radius: 4 }, // Rounded corners
-        render: { fillStyle: '#e74c3c' },
-        label: 'player'
+        label: 'player',
+        restitution: 0,      // No bounce
+        friction: 0.8,       // High friction for grip
+        frictionAir: 0.02,   // Light air resistance
+        inertia: Infinity,   // IMPORTANT: Prevents rotation (rolling off the wall)
+        render: { fillStyle: '#e74c3c' }
     });
 }
 
 // Wall Factory
+// Wall Factory
 function createWall(x: number, y: number, height: number, isBounce = false) {
     return Matter.Bodies.rectangle(x, y, CONFIG.WALL_WIDTH, height, {
-        isStatic: true, // Walls never move
-        friction: 1,
-        render: { fillStyle: isBounce ? '#3498db' : '#2ecc71' },
-        label: isBounce ? 'bounce-wall' : 'wall'
+        isStatic: true,
+        label: isBounce ? 'bounce-wall' : 'wall',
+        restitution: 0, // IMPORTANT: Walls must not be bouncy
+        render: { fillStyle: isBounce ? '#3498db' : '#2ecc71' }
     });
 }
 
@@ -124,6 +120,7 @@ function generateLevelStep() {
             {
                 isStatic: true,
                 label: 'wall',
+                restitution: 0,  // CRITICAL: Prevents bouncing
                 render: { fillStyle: wallColor }
             }
         );
@@ -148,133 +145,126 @@ function generateLevelStep() {
 
 // --- 4. INPUT & PHYSICS LOGIC ---
 
-function handleInput() {
-    if (!gameActive) {
-        return; // Don't restart on click, use the buttons
+const handleJump = () => {
+    if (!player) return;
+
+    if (canJump) {
+        // --- WALL JUMP LOGIC ---
+        if (isWallSliding) {
+            // Logic: Jump AWAY from the wall.
+            // If I am on the Left (-1), I want to kick Left (-1) ??? 
+            // WAIT - The user's logic says: "If I am on the Left (-1), I want to kick Left (-1)."
+            // BUT standard physics would kick RIGHT if on left wall.
+            // Let's re-read the user request carefully.
+
+            // User Request Text:
+            // "Logic: Jump AWAY from the wall.
+            // If I am on the Left (-1), I want to kick Left (-1).
+            // If I am on the Right (1), I want to kick Right (1).
+            // jumpX = CONFIG.JUMP_FORCE_X * jumpDirection;"
+
+            // This is contradictory to "Jump AWAY". If on Left wall (-1), kicking Left (-1) pushes you further left (into/through wall or just same side).
+            // Typically: Left Wall -> Kick Right (+1). Right Wall -> Kick Left (-1).
+
+            // HOWEVER, the user's snippet explicitly uses `jumpDirection = currentWallSide`.
+            // Let's look at how `currentWallSide` is calculated.
+            // `const isPlayerOnLeft = playerBody.position.x < wallBody.position.x;`
+            // `currentWallSide = isPlayerOnLeft ? -1 : 1;`
+
+            // If Player is Left of Wall (Side -1):
+            // We want to jump LEFT (away from wall? No, wall is to the right). 
+            // Wait, if player X < wall X, player is on the LEFT of the wall. The wall is to the RIGHT.
+            // So jumping LEFT (-1) is jumping AWAY from the wall.
+            // YES. This makes sense. The player is on the LEFT side of the wall. To jump away, they must go LEFT.
+
+            // So Jump Direction = Current Wall Side.
+
+            const jumpDirection = currentWallSide;
+
+            Matter.Body.setVelocity(player, {
+                x: CONFIG.JUMP_FORCE_X * jumpDirection, // Kick away horizontally
+                y: CONFIG.JUMP_FORCE_Y                  // Jump up
+            });
+
+            // Unlock the player immediately so they don't get "stuck" for 1 frame
+            isWallSliding = false;
+        }
+        // --- NORMAL JUMP LOGIC (Optional / Start of game) ---
+        else {
+            Matter.Body.setVelocity(player, {
+                x: 0,
+                y: CONFIG.JUMP_FORCE_Y
+            });
+        }
+
+        canJump = false; // Prevent spamming jump
     }
+};
 
-    console.log('[Input] Current state:', currentState, 'Wall side:', currentWallSide);
+// Hook up the listeners
+window.addEventListener('mousedown', handleJump);
+window.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    handleJump();
+}, { passive: false });
 
-    if (currentState === STATE.WALL) {
-        // KICK OFF WALL
-        Matter.Body.setStatic(player, false); // Unfreeze gravity
+// --- COLLISION HANDLING (Wall Sliding Physics) ---
 
-        // Calculate Launch Vector
-        // If on Left wall (-1), launch Right (+1)
-        // Launch Upwards (Negative Y)
-        const directionX = currentWallSide === -1 ? 1 : -1;
-
-        Matter.Body.setVelocity(player, {
-            x: directionX * CONFIG.JUMP_FORCE_X,
-            y: CONFIG.JUMP_FORCE_Y
-        });
-
-        // Add some spin for style
-        Matter.Body.setAngularVelocity(player, directionX * 0.1);
-
-        currentState = STATE.AIR;
-        canDoubleJump = true; // Unlock air jump
-        console.log('[Input] Kicked off wall, direction:', directionX);
-
-    } else if (currentState === STATE.GROUND) {
-        // JUMP FROM GROUND - go toward a wall
-        Matter.Body.setStatic(player, false);
-
-        // Jump toward the closer wall or alternate
-        const goRight = player.position.x < window.innerWidth / 2;
-        const directionX = goRight ? 1 : -1;
-
-        Matter.Body.setVelocity(player, {
-            x: directionX * CONFIG.JUMP_FORCE_X,
-            y: CONFIG.JUMP_FORCE_Y
-        });
-
-        Matter.Body.setAngularVelocity(player, directionX * 0.1);
-
-        currentState = STATE.AIR;
-        canDoubleJump = true;
-        console.log('[Input] Jumped from ground, direction:', directionX);
-
-    } else if (currentState === STATE.AIR && canDoubleJump) {
-        // AIR JUMP (Double Jump)
-        // Simply boost up, kill horizontal momentum slightly
-        Matter.Body.setVelocity(player, {
-            x: player.velocity.x, // Keep momentum
-            y: CONFIG.JUMP_FORCE_Y * 0.8 // Slightly weaker jump
-        });
-
-        // Spin animation
-        Matter.Body.setAngularVelocity(player, player.velocity.x > 0 ? 0.2 : -0.2);
-
-        canDoubleJump = false; // Consume jump
-        console.log('[Input] Double jump used');
-    }
-}
-
-// Event Listeners
-window.addEventListener('mousedown', handleInput);
-window.addEventListener('touchstart', (e) => { e.preventDefault(); handleInput(); }, { passive: false });
-
-// Collision Handling (The "Stick" Logic)
-// --- COLLISION HANDLING ---
-Matter.Events.on(engine, 'collisionStart', (event) => {
+Matter.Events.on(engine, 'collisionActive', (event) => {
     event.pairs.forEach((pair) => {
         const bodyA = pair.bodyA;
         const bodyB = pair.bodyB;
 
-        // 1. Extract the labels so we know what hit what
-        const labelA = bodyA.label;
-        const labelB = bodyB.label;
-
-        // 2. Check if the PLAYER hit a WALL
         let playerBody: Matter.Body | null = null;
         let wallBody: Matter.Body | null = null;
 
-        // Find which body is which (since they can be in any order)
-        if (labelA === 'player' && labelB === 'wall') {
+        // 1. Identify Player and Wall
+        if (bodyA.label === 'player' && bodyB.label === 'wall') {
             playerBody = bodyA;
             wallBody = bodyB;
-        } else if (labelB === 'player' && labelA === 'wall') {
+        } else if (bodyB.label === 'player' && bodyA.label === 'wall') {
             playerBody = bodyB;
             wallBody = bodyA;
         }
 
-        // 3. Execute Collision Logic
         if (playerBody && wallBody) {
-            // Stop gravity/sliding temporarily
-            Matter.Body.setStatic(playerBody, true);
+            isWallSliding = true;
+            canJump = true; // Allow jumping again
 
-            // Update game state
-            currentState = STATE.WALL;
-            canDoubleJump = true;
-
-            // Reset rotation
-            Matter.Body.setAngle(playerBody, 0);
-
-            // Determine which side of the wall the player hit
-            // If player X is less than Wall X, they are on the Left face
+            // 2. Determine Wall Side
+            // If player X < wall X, player is on the Left (-1)
             const isPlayerOnLeft = playerBody.position.x < wallBody.position.x;
-
-            const xOffset = (CONFIG.WALL_WIDTH / 2) + (CONFIG.PLAYER_SIZE / 2) + 1;
-
-            // Snap player to the correct face of the wall
-            Matter.Body.setPosition(playerBody, {
-                x: isPlayerOnLeft
-                    ? wallBody.position.x - xOffset  // Stick to Left side
-                    : wallBody.position.x + xOffset, // Stick to Right side
-                y: playerBody.position.y
-            });
-
-            // Set jump direction based on which face we're on
-            // Left face (-1) = jump left, Right face (1) = jump right
             currentWallSide = isPlayerOnLeft ? -1 : 1;
 
-            // Haptic feedback
-            if (typeof (window as any).triggerHaptic === 'function') {
-                (window as any).triggerHaptic('light');
-            }
+            // 2. FORCE THE GRIP (Kill X Velocity)
+            // Push player slightly INTO the wall to ensure contact remains
 
-            console.log('[Collision] Stuck to wall at', wallBody.position.x, 'player on', isPlayerOnLeft ? 'LEFT' : 'RIGHT', 'face');
+            // 3. FORCE THE SLIDE (Cap Y Velocity)
+            const slideSpeed = 2;
+
+            Matter.Body.setVelocity(playerBody, {
+                x: 0, // Stop horizontal movement so we stick
+                y: playerBody.velocity.y > slideSpeed ? slideSpeed : playerBody.velocity.y
+            });
+        }
+
+        // Ground collision (keep simple)
+        if ((bodyA.label === 'player' && bodyB.label === 'ground') ||
+            (bodyB.label === 'player' && bodyA.label === 'ground')) {
+            canJump = true;
+            isWallSliding = false;
+            currentWallSide = 0;
+        }
+    });
+});
+
+// Reset state when leaving the wall
+Matter.Events.on(engine, 'collisionEnd', (event) => {
+    event.pairs.forEach((pair) => {
+        const labels = [pair.bodyA.label, pair.bodyB.label];
+        if (labels.includes('player') && labels.includes('wall')) {
+            isWallSliding = false;
+            currentWallSide = 0;
         }
     });
 });
@@ -312,14 +302,12 @@ function resetGame() {
     player = createPlayer(playerX, playerY);
     Matter.World.add(world, player);
 
-    // Set initial state - player is on the ground, touching the left wall
-    // We'll treat this as STATE.WALL so first click kicks off
-    currentState = STATE.WALL;
-    currentWallSide = -1; // On left side (will jump RIGHT)
-    canDoubleJump = true;
+    // Set initial state - player can jump immediately
+    canJump = true;
+    isWallSliding = true;  // Treat initial position as on wall
+    currentWallSide = -1;  // On left side (will jump RIGHT)
 
-    // Make player static initially so they don't fall
-    Matter.Body.setStatic(player, true);
+    // Player is NOT static - they can slide down if they want
 
     // Force initial walls above
     generateLevelStep();
@@ -453,6 +441,8 @@ function updateWithUI() {
 
     // Level Gen
     generateLevelStep();
+
+
 
     // Check Death (Fall below camera)
     if (player.position.y > cameraY + window.innerHeight + 100) {
