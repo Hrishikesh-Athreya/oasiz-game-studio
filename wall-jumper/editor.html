@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wall Jumper - Pattern Editor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+        }
+        
+        .sidebar {
+            width: 320px;
+            background: #1a1a2e;
+            padding: 20px;
+            overflow-y: auto;
+            height: 100vh;
+            flex-shrink: 0;
+        }
+        
+        h1 { color: #FF0055; font-size: 20px; margin-bottom: 20px; }
+        h2 { color: #00AAFF; font-size: 14px; margin: 20px 0 10px; }
+        
+        .pattern-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            background: #0f0f1a;
+            border-radius: 8px;
+            padding: 8px;
+        }
+        
+        .pattern-item {
+            padding: 8px 12px;
+            background: #16213e;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.15s;
+        }
+        
+        .pattern-item:hover { background: #1a3a5e; }
+        .pattern-item.selected { background: #FF0055; color: white; }
+        
+        .wall-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        
+        .wall-item {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 12px;
+        }
+        
+        .wall-item.selected { outline: 2px solid #55FF00; }
+        
+        .wall-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .wall-label { font-weight: 600; font-size: 13px; }
+        
+        .wall-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .control-group label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+        }
+        
+        .control-group input, .control-group select {
+            padding: 8px;
+            border: none;
+            border-radius: 4px;
+            background: #0f3460;
+            color: #eee;
+            font-size: 13px;
+        }
+        
+        .control-group input[type="number"] {
+            width: 100%;
+        }
+        
+        .btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.15s;
+        }
+        
+        .btn-primary { background: #FF0055; color: white; }
+        .btn-primary:hover { background: #cc0044; }
+        .btn-secondary { background: #00AAFF; color: white; }
+        .btn-secondary:hover { background: #0088cc; }
+        .btn-success { background: #55FF00; color: #000; }
+        .btn-success:hover { background: #44cc00; }
+        .btn-danger { background: #ff4444; color: white; }
+        .btn-danger:hover { background: #cc3333; }
+        .btn-small { padding: 6px 10px; font-size: 11px; }
+        
+        .button-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .canvas-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+        
+        .canvas-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .canvas-header h2 { margin: 0; }
+        
+        .canvas-info {
+            font-size: 12px;
+            color: #888;
+        }
+        
+        #editor-canvas {
+            background: #111;
+            border-radius: 8px;
+            cursor: crosshair;
+            flex: 1;
+        }
+        
+        .legend {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .legend-color {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+        }
+        
+        .code-output {
+            margin-top: 20px;
+            background: #16213e;
+            border-radius: 8px;
+            padding: 15px;
+        }
+        
+        .code-output pre {
+            background: #0a0a0a;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 1.4;
+            overflow-x: auto;
+            max-height: 150px;
+        }
+        
+        .instructions {
+            font-size: 12px;
+            color: #888;
+            line-height: 1.6;
+            margin-top: 15px;
+            padding: 12px;
+            background: #0f0f1a;
+            border-radius: 6px;
+        }
+        
+        .instructions strong { color: #00AAFF; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <h1>Pattern Editor</h1>
+        
+        <h2>Patterns</h2>
+        <div class="pattern-list" id="pattern-list"></div>
+        <div class="button-row">
+            <button class="btn btn-primary btn-small" id="new-pattern-btn">+ New Pattern</button>
+        </div>
+        
+        <h2>Selected Pattern</h2>
+        <div id="pattern-name-container">
+            <div class="control-group">
+                <label>Name</label>
+                <input type="text" id="pattern-name" placeholder="Pattern name">
+            </div>
+        </div>
+        
+        <h2>Walls <span id="wall-count">(0)</span></h2>
+        <div class="wall-list" id="wall-list"></div>
+        <div class="button-row">
+            <button class="btn btn-secondary btn-small" id="add-wall-btn">+ Add Wall</button>
+            <button class="btn btn-danger btn-small" id="delete-wall-btn">Delete Selected</button>
+        </div>
+        
+        <div class="instructions">
+            <strong>Infinite Canvas:</strong><br>
+            - Scroll wheel: zoom in/out<br>
+            - Drag empty space: pan around<br>
+            - Click wall to select, drag to move<br>
+            - Arrow keys: nudge by 1px<br>
+            - Shift+Arrow: nudge by 10px
+        </div>
+        
+        <div class="button-row">
+            <button class="btn btn-success" id="save-btn">Save All</button>
+            <button class="btn btn-secondary" id="export-btn">Export Code</button>
+            <button class="btn btn-primary btn-small" id="center-btn">Center View</button>
+        </div>
+        
+        <div class="code-output">
+            <h2>Pattern Code</h2>
+            <pre id="code-output">// Select a pattern</pre>
+            <div class="button-row">
+                <button class="btn btn-secondary btn-small" id="copy-btn">Copy</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="canvas-area">
+        <div class="canvas-header">
+            <h2 id="canvas-title">Pattern Preview</h2>
+            <div class="canvas-info" id="canvas-info">Click to select, drag to move</div>
+        </div>
+        <canvas id="editor-canvas"></canvas>
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FF0055;"></div>
+                <span>Wall</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #55FF00;"></div>
+                <span>Selected</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FFCC00;"></div>
+                <span>Entry (origin)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #00AAFF;"></div>
+                <span>Exit point</span>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module" src="/src/editor.ts"></script>
+</body>
+</html>

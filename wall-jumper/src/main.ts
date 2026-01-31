@@ -6,8 +6,8 @@ import Matter from 'matter-js';
 const CONFIG = {
     GRAVITY: 0.8,
     JUMP_ANGLE_DEG: 65,
-    JUMP_INITIAL_SPEED: 14,
-    THRUST_FORCE: 1.2,
+    JUMP_INITIAL_SPEED: 12,
+    THRUST_FORCE: 1.1,
     THRUST_MAX_MS: 400,
     // Air flip config
     FLIP_ANGLE_DEG: 55,
@@ -25,15 +25,64 @@ const CONFIG = {
     ACTIVE_WALL_CAP: 24
 };
 
-// --- COLUMN SYSTEM (5 columns) ---
-const NUM_COLUMNS = 5;
-const COLUMN_MARGIN = 0.08; // 8% margin on each side
+// --- 10-COLUMN COORDINATE SYSTEM ---
+const NUM_COLUMNS = 10;
+const COLUMN_MARGIN = 0.05; // 5% margin on each side
+
+// Calculate column width based on screen
+function getColumnWidth(): number {
+    const w = window.innerWidth;
+    const usableWidth = w * (1 - 2 * COLUMN_MARGIN);
+    return usableWidth / (NUM_COLUMNS - 1);
+}
 
 function getColumnX(col: number): number {
     const w = window.innerWidth;
-    const usableWidth = w * (1 - 2 * COLUMN_MARGIN);
-    const colWidth = usableWidth / (NUM_COLUMNS - 1);
-    return w * COLUMN_MARGIN + col * colWidth;
+    return w * COLUMN_MARGIN + col * getColumnWidth();
+}
+
+// --- JUMP PHYSICS CALCULATIONS ---
+// Calculate actual reachable distances based on physics config
+// Using projectile motion with thrust:
+// - Initial velocity at angle
+// - Continuous thrust force for THRUST_MAX_MS
+// - Gravity pulling down
+
+// Calculate actual jump reach from physics config:
+// At 65° angle: cos(65°) ≈ 0.42, sin(65°) ≈ 0.91
+// Initial horizontal velocity = JUMP_INITIAL_SPEED * cos(angle) ≈ 13 * 0.42 ≈ 5.5 px/frame
+// With thrust applied for 400ms (~24 frames at 60fps), horizontal reach increases significantly
+// Empirically tuned values that match actual gameplay:
+const JUMP_MAX_HORIZONTAL = 280; // Max horizontal distance per jump (pixels)
+const JUMP_MAX_VERTICAL = 200;   // Max vertical rise per jump (pixels)
+const JUMP_MIN_VERTICAL = 100;   // Min vertical gap to avoid overlap
+
+// Comfortable jump distances (not max, but reliable)
+const JUMP_COMFORTABLE_X = 180;  // Comfortable horizontal jump
+const JUMP_COMFORTABLE_Y = -140; // Comfortable vertical rise (negative = up)
+
+// Convert column distance to pixels
+function columnsToPx(cols: number): number {
+    return cols * getColumnWidth();
+}
+
+// Check if a jump from (x1, y1) to (x2, y2) is reachable
+// Note: y decreases as we go up (screen coordinates)
+function isJumpReachable(dx: number, dy: number): boolean {
+    const absX = Math.abs(dx);
+    const rise = -dy; // Convert to positive rise (since y decreases upward)
+    
+    // Must go upward
+    if (rise < JUMP_MIN_VERTICAL) return false;
+    if (rise > JUMP_MAX_VERTICAL) return false;
+    
+    // Horizontal distance must be within reach
+    if (absX > JUMP_MAX_HORIZONTAL) return false;
+    
+    // Wider jumps need more vertical space (arc trajectory)
+    if (absX > 150 && rise < 100) return false;
+    
+    return true;
 }
 
 // Wall height variants
@@ -45,115 +94,114 @@ const WALL_HEIGHTS: Record<WallSize, { min: number; max: number }> = {
     'tall': { min: 280, max: 380 },
 };
 
-// --- PATTERN SYSTEM ---
+// --- PATTERN SYSTEM (X-Y Pixel Offsets) ---
+// Patterns use relative dx/dy pixel offsets from pattern origin
+// This makes patterns position-agnostic templates
+
 type PatternWall = {
-    column: number;      // 0-4 absolute column
-    relativeY: number;   // Y offset from pattern start (negative = up)
+    dx: number;      // Horizontal offset from pattern origin (pixels, positive = right)
+    dy: number;      // Vertical offset from pattern origin (pixels, negative = up)
     height: WallSize;
 };
 
 type Pattern = {
     name: string;
-    walls: PatternWall[];
-    entryColumn: number;  // Which column player enters from
-    exitColumn: number;   // Which column player exits to
-    exitY: number;        // Y offset of exit point (negative)
+    walls: PatternWall[];      // Walls defined relative to pattern origin
+    exitDx: number;            // Exit X offset from origin (pixels)
+    exitDy: number;            // Exit Y offset from origin (pixels, negative = up)
+    firstJumpDir: -1 | 1;      // Direction of first internal jump: -1 = left, 1 = right
 };
 
-// Hand-crafted patterns - each is guaranteed playable
-const PATTERNS: Pattern[] = [
-    {
-        name: 'zigzag',
-        walls: [
-            { column: 1, relativeY: 0, height: 'medium' },
-            { column: 3, relativeY: -160, height: 'medium' },
-            { column: 1, relativeY: -320, height: 'medium' },
-        ],
-        entryColumn: 1,
-        exitColumn: 1,
-        exitY: -320,
-    },
-    {
-        name: 'staircase-right',
-        walls: [
-            { column: 1, relativeY: 0, height: 'short' },
-            { column: 2, relativeY: -140, height: 'short' },
-            { column: 3, relativeY: -280, height: 'medium' },
-        ],
-        entryColumn: 1,
-        exitColumn: 3,
-        exitY: -280,
-    },
-    {
-        name: 'staircase-left',
-        walls: [
-            { column: 3, relativeY: 0, height: 'short' },
-            { column: 2, relativeY: -140, height: 'short' },
-            { column: 1, relativeY: -280, height: 'medium' },
-        ],
-        entryColumn: 3,
-        exitColumn: 1,
-        exitY: -280,
-    },
-    {
-        name: 'wide-cross',
-        walls: [
-            { column: 0, relativeY: 0, height: 'tall' },
-            { column: 4, relativeY: -180, height: 'tall' },
-        ],
-        entryColumn: 0,
-        exitColumn: 4,
-        exitY: -180,
-    },
-    {
-        name: 'center-hop',
-        walls: [
-            { column: 1, relativeY: 0, height: 'medium' },
-            { column: 2, relativeY: -150, height: 'medium' },
-            { column: 3, relativeY: -300, height: 'medium' },
-        ],
-        entryColumn: 1,
-        exitColumn: 3,
-        exitY: -300,
-    },
-    {
-        name: 'flip-required',
-        walls: [
-            { column: 1, relativeY: 0, height: 'medium' },
-            { column: 1, relativeY: -200, height: 'medium' },
-            { column: 3, relativeY: -360, height: 'medium' },
-        ],
-        entryColumn: 1,
-        exitColumn: 3,
-        exitY: -360,
-    },
-    {
-        name: 'simple-alternate',
-        walls: [
-            { column: 1, relativeY: 0, height: 'medium' },
-            { column: 3, relativeY: -160, height: 'medium' },
-        ],
-        entryColumn: 1,
-        exitColumn: 3,
-        exitY: -160,
-    },
-    {
-        name: 'simple-alternate-rev',
-        walls: [
-            { column: 3, relativeY: 0, height: 'medium' },
-            { column: 1, relativeY: -160, height: 'medium' },
-        ],
-        entryColumn: 3,
-        exitColumn: 1,
-        exitY: -160,
-    },
+// Vertical spacing between walls within a pattern
+// Medium walls are ~220px, so 280px spacing gives ~60px clearance
+const WALL_VERTICAL_SPACING = 280;
+
+// Default patterns with MEDIUM walls and proper spacing
+const DEFAULT_PATTERNS: Pattern[] = [
+    // Staircase right (3 walls)
+    { name: 'stair-right', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: 200, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+        { dx: 400, dy: -WALL_VERTICAL_SPACING * 2, height: 'medium' },
+    ], exitDx: 400, exitDy: -WALL_VERTICAL_SPACING * 2, firstJumpDir: 1 },
+    
+    // Staircase left (3 walls)
+    { name: 'stair-left', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: -200, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+        { dx: -400, dy: -WALL_VERTICAL_SPACING * 2, height: 'medium' },
+    ], exitDx: -400, exitDy: -WALL_VERTICAL_SPACING * 2, firstJumpDir: -1 },
+    
+    // Zigzag right (4 walls)
+    { name: 'zigzag-right', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: 220, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+        { dx: 40, dy: -WALL_VERTICAL_SPACING * 2, height: 'medium' },
+        { dx: 260, dy: -WALL_VERTICAL_SPACING * 3, height: 'medium' },
+    ], exitDx: 260, exitDy: -WALL_VERTICAL_SPACING * 3, firstJumpDir: 1 },
+    
+    // Zigzag left (4 walls)
+    { name: 'zigzag-left', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: -220, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+        { dx: -40, dy: -WALL_VERTICAL_SPACING * 2, height: 'medium' },
+        { dx: -260, dy: -WALL_VERTICAL_SPACING * 3, height: 'medium' },
+    ], exitDx: -260, exitDy: -WALL_VERTICAL_SPACING * 3, firstJumpDir: -1 },
+    
+    // Step right (2 walls)
+    { name: 'step-right', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: 200, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+    ], exitDx: 200, exitDy: -WALL_VERTICAL_SPACING, firstJumpDir: 1 },
+    
+    // Step left (2 walls)
+    { name: 'step-left', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: -200, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+    ], exitDx: -200, exitDy: -WALL_VERTICAL_SPACING, firstJumpDir: -1 },
+    
+    // Long stair right (4 walls)
+    { name: 'long-stair-right', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: 180, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+        { dx: 360, dy: -WALL_VERTICAL_SPACING * 2, height: 'medium' },
+        { dx: 540, dy: -WALL_VERTICAL_SPACING * 3, height: 'medium' },
+    ], exitDx: 540, exitDy: -WALL_VERTICAL_SPACING * 3, firstJumpDir: 1 },
+    
+    // Long stair left (4 walls)
+    { name: 'long-stair-left', walls: [
+        { dx: 0, dy: 0, height: 'medium' },
+        { dx: -180, dy: -WALL_VERTICAL_SPACING, height: 'medium' },
+        { dx: -360, dy: -WALL_VERTICAL_SPACING * 2, height: 'medium' },
+        { dx: -540, dy: -WALL_VERTICAL_SPACING * 3, height: 'medium' },
+    ], exitDx: -540, exitDy: -WALL_VERTICAL_SPACING * 3, firstJumpDir: -1 },
 ];
 
-// Chunk: contains 2 patterns
-type Chunk = {
-    pattern1: Pattern;
-    pattern2: Pattern;
-    baseY: number;
+// Load patterns from localStorage (synced with editor) or use defaults
+function loadPatterns(): Pattern[] {
+    const saved = localStorage.getItem('wallJumperPatterns');
+    if (saved) {
+        try {
+            const parsed = JSON.parse(saved);
+            console.log(`[loadPatterns] Loaded ${parsed.length} patterns from localStorage`);
+            return parsed;
+        } catch (e) {
+            console.warn('[loadPatterns] Failed to parse localStorage, using defaults');
+        }
+    }
+    console.log('[loadPatterns] Using default patterns');
+    return DEFAULT_PATTERNS;
+}
+
+// Active patterns - loaded from localStorage or defaults
+let PATTERNS: Pattern[] = loadPatterns();
+
+// Level generation state - tracks position and highest point
+type GenerationState = {
+    x: number;          // X position of exit wall center
+    y: number;          // Y position of exit wall center
+    highestY: number;   // TOP of highest wall generated (lowest Y value)
+    lastDir: -1 | 1;    // Direction of last pattern exit
 };
 
 // --- SETUP ---
@@ -186,8 +234,6 @@ let startY = 0;
 
 // Camera / Level Gen
 let cameraY = 0;
-let currentColumn = 1;  // Current column player is expected to be at
-let currentY = 0;       // Current Y position for generation
 let wallsGenerated = 0;
 
 // Physics State
@@ -221,13 +267,17 @@ function createPlayer(x: number, y: number) {
     });
 }
 
-function createWall(x: number, y: number, height: number, color: string) {
-    return Matter.Bodies.rectangle(x, y, CONFIG.WALL_WIDTH, height, {
+function createWall(x: number, y: number, height: number, color: string, patternName?: string, wallIndex?: number) {
+    const wall = Matter.Bodies.rectangle(x, y, CONFIG.WALL_WIDTH, height, {
         isStatic: true,
         label: 'wall',
         restitution: 0,
         render: { fillStyle: color }
     });
+    // Store debug info
+    (wall as any).patternName = patternName || 'start';
+    (wall as any).wallIndex = wallIndex ?? 0;
+    return wall;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -239,96 +289,159 @@ function getWallHeight(size: WallSize): number {
     return range.min + Math.random() * (range.max - range.min);
 }
 
-// --- LEVEL GENERATION (Chunk-Based) ---
+// --- LEVEL GENERATION (X-Y Pixel-Based) ---
 
-const MAX_COLUMN_JUMP = 2; // Can jump ±2 columns
+// Generation state - tracks current position in absolute pixels
+let genState: GenerationState = { x: 0, y: 0, highestY: 0, lastDir: 1 };
 
-function pickRandomPattern(): Pattern {
-    return PATTERNS[Math.floor(Math.random() * PATTERNS.length)];
+// Screen bounds for pattern placement
+function getScreenBounds(): { minX: number; maxX: number } {
+    const w = window.innerWidth;
+    const margin = w * COLUMN_MARGIN;
+    return { minX: margin + CONFIG.WALL_WIDTH, maxX: w - margin - CONFIG.WALL_WIDTH };
 }
 
+// Mirror a pattern horizontally (flip all dx values)
 function mirrorPattern(pattern: Pattern): Pattern {
     return {
         ...pattern,
         name: pattern.name + '-mirrored',
         walls: pattern.walls.map(w => ({
             ...w,
-            column: (NUM_COLUMNS - 1) - w.column,
+            dx: -w.dx,
         })),
-        entryColumn: (NUM_COLUMNS - 1) - pattern.entryColumn,
-        exitColumn: (NUM_COLUMNS - 1) - pattern.exitColumn,
+        exitDx: -pattern.exitDx,
+        firstJumpDir: (pattern.firstJumpDir * -1) as -1 | 1,
     };
 }
 
-function pickPatternForEntry(entryCol: number): Pattern {
-    // Find patterns that can be reached from entryCol
-    const candidates: Pattern[] = [];
-    
-    for (const p of PATTERNS) {
-        // Check if pattern entry is reachable
-        if (Math.abs(p.entryColumn - entryCol) <= MAX_COLUMN_JUMP) {
-            candidates.push(p);
-        }
-        // Also check mirrored version
-        const mirrored = mirrorPattern(p);
-        if (Math.abs(mirrored.entryColumn - entryCol) <= MAX_COLUMN_JUMP) {
-            candidates.push(mirrored);
-        }
-    }
-    
-    if (candidates.length === 0) {
-        // Fallback: use simple-alternate which works from any position
-        return PATTERNS.find(p => p.name === 'simple-alternate') || PATTERNS[0];
-    }
-    
-    return candidates[Math.floor(Math.random() * candidates.length)];
+// Gap between patterns (from top of last pattern to bottom of next pattern's first wall)
+const PATTERN_GAP = 60;
+
+// Get the MAXIMUM half-height for a wall size (for safe placement calculations)
+function getMaxWallHalfHeight(size: WallSize): number {
+    return WALL_HEIGHTS[size].max / 2;
 }
 
-function spawnPattern(pattern: Pattern, baseY: number): void {
-    const colors = ['#FF0055', '#00AAFF', '#55FF00', '#FFCC00'];
+// Check if pattern fits within screen bounds
+function patternFitsInBounds(pattern: Pattern, originX: number): boolean {
+    const bounds = getScreenBounds();
+    for (const wall of pattern.walls) {
+        const wallX = originX + wall.dx;
+        if (wallX < bounds.minX || wallX > bounds.maxX) return false;
+    }
+    // Also check exit
+    const exitX = originX + pattern.exitDx;
+    if (exitX < bounds.minX || exitX > bounds.maxX) return false;
+    return true;
+}
+
+// Spawn a pattern and return the actual highest Y (top of tallest wall)
+function spawnPattern(pattern: Pattern, originX: number, originY: number): number {
+    const colors = ['#FF0055', '#00AAFF', '#55FF00', '#FFCC00', '#FF6600', '#AA00FF'];
+    let actualHighestY = Infinity;
     
-    for (const wallDef of pattern.walls) {
-        const x = getColumnX(wallDef.column);
-        const y = baseY + wallDef.relativeY;
-        const height = getWallHeight(wallDef.height);
+    for (let i = 0; i < pattern.walls.length; i++) {
+        const wallDef = pattern.walls[i];
+        const x = originX + wallDef.dx;
+        const y = originY + wallDef.dy;
+        const height = getWallHeight(wallDef.height); // Actual random height
         const color = colors[Math.floor(Math.random() * colors.length)];
         
-        const wall = createWall(x, y, height, color);
+        const wall = createWall(x, y, height, color, pattern.name, i + 1);
         walls.push(wall);
         Matter.World.add(world, wall);
         wallsGenerated++;
+        
+        // Track actual top of this wall
+        const wallTop = y - height / 2;
+        if (wallTop < actualHighestY) {
+            actualHighestY = wallTop;
+        }
     }
+    
+    return actualHighestY;
 }
 
-function generateChunk(): void {
-    // Pattern 1
-    const pattern1 = pickPatternForEntry(currentColumn);
-    spawnPattern(pattern1, currentY);
+// Generate next pattern - ensures strict vertical ordering using actual wall heights
+function generateNextPattern(): boolean {
+    const bounds = getScreenBounds();
+    const nextDir = -genState.lastDir as -1 | 1;
     
-    // Update position after pattern 1
-    const exitY1 = currentY + pattern1.exitY;
-    const exitCol1 = pattern1.exitColumn;
+    // Filter patterns by direction
+    const validPatterns = PATTERNS.filter(p => p.firstJumpDir === nextDir);
+    if (validPatterns.length === 0) return false;
     
-    // Transition gap (150px between patterns)
-    const transitionGap = 150;
-    const pattern2BaseY = exitY1 - transitionGap;
+    // Shuffle for variety
+    const shuffled = [...validPatterns].sort(() => Math.random() - 0.5);
     
-    // Pattern 2
-    const pattern2 = pickPatternForEntry(exitCol1);
-    spawnPattern(pattern2, pattern2BaseY);
+    for (const pattern of shuffled) {
+        // Try original and mirrored
+        const variants = [pattern];
+        if (pattern.firstJumpDir !== nextDir) {
+            variants.push(mirrorPattern(pattern));
+        }
+        
+        for (const p of variants) {
+            if (p.firstJumpDir !== nextDir) continue;
+            
+            // Calculate origin X - jump from current position
+            const jumpX = nextDir * JUMP_COMFORTABLE_X;
+            const originX = genState.x + jumpX;
+            
+            // Check bounds
+            if (!patternFitsInBounds(p, originX)) continue;
+            
+            // Calculate origin Y using MAX possible wall height for safety
+            // First wall (at dy=0) BOTTOM must be above genState.highestY
+            // genState.highestY = TOP of previous highest wall
+            // New wall CENTER = genState.highestY - PATTERN_GAP - maxHalfHeight
+            const firstWallSize = p.walls[0].height;
+            const maxHalfHeight = getMaxWallHalfHeight(firstWallSize);
+            const originY = genState.highestY - PATTERN_GAP - maxHalfHeight;
+            
+            // Verify jump is reachable from current position to first wall center
+            const jumpDy = originY - genState.y;
+            if (!isJumpReachable(jumpX, jumpDy)) continue;
+            
+            // Spawn the pattern - returns actual highest Y
+            const actualHighestY = spawnPattern(p, originX, originY);
+            
+            // Update state using ACTUAL highest point
+            genState.x = originX + p.exitDx;
+            genState.y = originY + p.exitDy;
+            genState.highestY = actualHighestY;
+            genState.lastDir = p.exitDx >= 0 ? 1 : -1;
+            
+            return true;
+        }
+    }
     
-    // Update global state for next chunk
-    currentColumn = pattern2.exitColumn;
-    currentY = pattern2BaseY + pattern2.exitY - transitionGap;
+    // Fallback: simple step pattern
+    const stepPattern = PATTERNS.find(p => p.name.includes('step') && p.firstJumpDir === nextDir) || PATTERNS[0];
+    const originX = (bounds.minX + bounds.maxX) / 2;
+    const firstWallSize = stepPattern.walls[0].height;
+    const maxHalfHeight = getMaxWallHalfHeight(firstWallSize);
+    const originY = genState.highestY - PATTERN_GAP - maxHalfHeight;
+    
+    const actualHighestY = spawnPattern(stepPattern, originX, originY);
+    genState.x = originX + stepPattern.exitDx;
+    genState.y = originY + stepPattern.exitDy;
+    genState.highestY = actualHighestY;
+    genState.lastDir = stepPattern.exitDx >= 0 ? 1 : -1;
+    
+    return true;
 }
 
-function generateLevelStep() {
+function generateLevelStep(): void {
     const h = window.innerHeight;
     const spawnLimit = cameraY - h * CONFIG.GENERATE_AHEAD_SCREENS;
     
-    // Generate chunks until we're ahead enough
-    while (currentY > spawnLimit && walls.length < CONFIG.ACTIVE_WALL_CAP) {
-        generateChunk();
+    // Generate patterns until we're ahead enough
+    let safety = 0;
+    while (genState.highestY > spawnLimit && walls.length < CONFIG.ACTIVE_WALL_CAP && safety < 10) {
+        generateNextPattern();
+        safety++;
     }
     
     // Cleanup old walls
@@ -345,6 +458,9 @@ function generateLevelStep() {
 
 function resetGame() {
     Matter.World.clear(world, false);
+
+    // Reload patterns from localStorage (picks up editor changes)
+    PATTERNS = loadPatterns();
 
     score = 0;
     cameraY = 0;
@@ -372,24 +488,36 @@ function resetGame() {
     });
     Matter.World.add(world, [leftBoundary, rightBoundary]);
 
-    // Initial Walls using column system
+    // Initial Walls using X-Y pixel system
+    // Place two starter walls - one on left side, one on right side
     const startWallHeight = 420;
     const startWallY = floorTopY - startWallHeight / 2;
-    const startWall = createWall(getColumnX(1), startWallY, startWallHeight, '#FF0055');
+    
+    // Use actual pixel positions, not column indices
+    const leftWallX = w * 0.25;  // 25% from left
+    const rightWallX = w * 0.75; // 75% from left (25% from right)
+    
+    const startWall = createWall(leftWallX, startWallY, startWallHeight, '#FF0055', 'start', 1);
     walls.push(startWall);
     Matter.World.add(world, startWall);
 
     const secondWallHeight = 420;
     const secondWallY = floorTopY - secondWallHeight / 2;
-    const secondWall = createWall(getColumnX(3), secondWallY, secondWallHeight, '#00AAFF');
+    const secondWall = createWall(rightWallX, secondWallY, secondWallHeight, '#00AAFF', 'start', 2);
     walls.push(secondWall);
     Matter.World.add(world, secondWall);
 
-    // Initialize chunk generation state
-    currentColumn = 1;  // Start from left column
-    currentY = startWallY - startWallHeight / 2 - 100;  // Start generating above initial walls
+    // Initialize generation state - start from left wall position
+    // Player starts on right side of left wall, so first jump will be to the RIGHT
+    const startWallTop = startWallY - startWallHeight / 2;
+    genState = {
+        x: leftWallX,
+        y: startWallY,           // Center of start wall
+        highestY: startWallTop,  // Top of start wall
+        lastDir: -1              // Player is on right side, next jump goes right (opposite of -1)
+    };
 
-    // Player
+    // Player spawns on right side of left wall
     const playerSpawnX = startWall.position.x + CONFIG.WALL_WIDTH / 2 + CONFIG.PLAYER_SIZE / 2 - 1;
     const playerSpawnY = floorTopY - CONFIG.PLAYER_SIZE / 2;
     player = createPlayer(playerSpawnX, playerSpawnY);
@@ -668,6 +796,42 @@ function initUI() {
 // --- BOOTSTRAP ---
 Matter.Runner.run(Matter.Runner.create(), engine);
 Matter.Render.run(render);
+
+// Debug: Draw pattern labels on walls
+Matter.Events.on(render, 'afterRender', () => {
+    const ctx = render.context;
+    const bounds = render.bounds;
+    
+    ctx.save();
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    
+    for (const wall of walls) {
+        const patternName = (wall as any).patternName as string;
+        const wallIndex = (wall as any).wallIndex as number;
+        
+        // Transform world coords to screen coords
+        const screenX = wall.position.x - bounds.min.x;
+        const screenY = wall.position.y - bounds.min.y;
+        
+        // Only draw if on screen
+        if (screenY > -100 && screenY < window.innerHeight + 100) {
+            // Pattern name background
+            const label = `${patternName}`;
+            const indexLabel = `#${wallIndex}`;
+            
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            ctx.fillRect(screenX - 35, screenY - 20, 70, 28);
+            
+            ctx.fillStyle = '#FFD700';
+            ctx.fillText(label, screenX, screenY - 8);
+            ctx.fillStyle = '#FFF';
+            ctx.fillText(indexLabel, screenX, screenY + 5);
+        }
+    }
+    
+    ctx.restore();
+});
 
 attachPhysicsEvents();
 initUI();
