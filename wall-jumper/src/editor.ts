@@ -24,8 +24,9 @@ const WALL_HEIGHTS: Record<WallSize, number> = {
 };
 
 // Vertical spacing between walls within a pattern
-// Medium walls are ~220px, so 280px spacing gives ~60px clearance
-const WALL_VERTICAL_SPACING = 280;
+// Must be: maxWallHeight + gap to guarantee no overlap
+// Medium max = 260px, so 260 + 60 gap = 320px minimum center-to-center
+const WALL_VERTICAL_SPACING = WALL_HEIGHTS['medium'] + 60;
 
 // Default patterns with MEDIUM walls and proper spacing
 const DEFAULT_PATTERNS: Pattern[] = [

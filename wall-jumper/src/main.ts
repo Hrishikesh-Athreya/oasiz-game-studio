@@ -113,8 +113,9 @@ type Pattern = {
 };
 
 // Vertical spacing between walls within a pattern
-// Medium walls are ~220px, so 280px spacing gives ~60px clearance
-const WALL_VERTICAL_SPACING = 280;
+// Must be: maxWallHeight + gap to guarantee no overlap
+// Medium max = 260px, so 260 + 60 gap = 320px minimum center-to-center
+const WALL_VERTICAL_SPACING = WALL_HEIGHTS['medium'].max + 60;
 
 // Default patterns with MEDIUM walls and proper spacing
 const DEFAULT_PATTERNS: Pattern[] = [
@@ -323,23 +324,45 @@ function getMaxWallHalfHeight(size: WallSize): number {
     return WALL_HEIGHTS[size].max / 2;
 }
 
-// Check if pattern fits within screen bounds
-function patternFitsInBounds(pattern: Pattern, originX: number): boolean {
-    const bounds = getScreenBounds();
+// Calculate the X range a pattern needs (min and max dx values)
+function getPatternXExtent(pattern: Pattern): { minDx: number; maxDx: number } {
+    let minDx = 0, maxDx = 0;
     for (const wall of pattern.walls) {
-        const wallX = originX + wall.dx;
-        if (wallX < bounds.minX || wallX > bounds.maxX) return false;
+        if (wall.dx < minDx) minDx = wall.dx;
+        if (wall.dx > maxDx) maxDx = wall.dx;
     }
-    // Also check exit
-    const exitX = originX + pattern.exitDx;
-    if (exitX < bounds.minX || exitX > bounds.maxX) return false;
-    return true;
+    // Also consider exit position
+    if (pattern.exitDx < minDx) minDx = pattern.exitDx;
+    if (pattern.exitDx > maxDx) maxDx = pattern.exitDx;
+    return { minDx, maxDx };
+}
+
+// Find a valid originX for a pattern, or return null if impossible
+function findValidOriginX(pattern: Pattern, preferredX: number): number | null {
+    const bounds = getScreenBounds();
+    const extent = getPatternXExtent(pattern);
+    
+    // Pattern needs originX such that:
+    // originX + minDx >= bounds.minX  →  originX >= bounds.minX - minDx
+    // originX + maxDx <= bounds.maxX  →  originX <= bounds.maxX - maxDx
+    const minOriginX = bounds.minX - extent.minDx;
+    const maxOriginX = bounds.maxX - extent.maxDx;
+    
+    // Check if there's any valid range
+    if (minOriginX > maxOriginX) return null; // Pattern is too wide for screen
+    
+    // Clamp preferred X to valid range
+    return Math.max(minOriginX, Math.min(maxOriginX, preferredX));
 }
 
 // Spawn a pattern and return the actual highest Y (top of tallest wall)
 function spawnPattern(pattern: Pattern, originX: number, originY: number): number {
     const colors = ['#FF0055', '#00AAFF', '#55FF00', '#FFCC00', '#FF6600', '#AA00FF'];
     let actualHighestY = Infinity;
+    let prevWallBottom = Infinity; // Track previous wall's bottom for overlap check
+    
+    console.log(`[spawnPattern] ${pattern.name} at origin (${originX.toFixed(0)}, ${originY.toFixed(0)})`);
+    console.log(`[spawnPattern] WALL_VERTICAL_SPACING = ${WALL_VERTICAL_SPACING}`);
     
     for (let i = 0; i < pattern.walls.length; i++) {
         const wallDef = pattern.walls[i];
@@ -348,13 +371,25 @@ function spawnPattern(pattern: Pattern, originX: number, originY: number): numbe
         const height = getWallHeight(wallDef.height); // Actual random height
         const color = colors[Math.floor(Math.random() * colors.length)];
         
+        const wallTop = y - height / 2;
+        const wallBottom = y + height / 2;
+        
+        // Check for overlap with previous wall
+        if (i > 0 && wallBottom > prevWallBottom - 10) {
+            console.warn(`[spawnPattern] OVERLAP! Wall ${i+1} bottom (${wallBottom.toFixed(0)}) overlaps with prev wall`);
+        }
+        
+        console.log(`[spawnPattern] Wall ${i+1}: dy=${wallDef.dy}, y=${y.toFixed(0)}, h=${height.toFixed(0)}, top=${wallTop.toFixed(0)}, bottom=${wallBottom.toFixed(0)}`);
+        
         const wall = createWall(x, y, height, color, pattern.name, i + 1);
         walls.push(wall);
         Matter.World.add(world, wall);
         wallsGenerated++;
         
+        // Track for next iteration
+        prevWallBottom = wallBottom;
+        
         // Track actual top of this wall
-        const wallTop = y - height / 2;
         if (wallTop < actualHighestY) {
             actualHighestY = wallTop;
         }
@@ -363,72 +398,87 @@ function spawnPattern(pattern: Pattern, originX: number, originY: number): numbe
     return actualHighestY;
 }
 
-// Generate next pattern - ensures strict vertical ordering using actual wall heights
+// Generate next pattern - INFINITE CANVAS: no bounds checking, camera follows player
 function generateNextPattern(): boolean {
-    const bounds = getScreenBounds();
     const nextDir = -genState.lastDir as -1 | 1;
     
     // Filter patterns by direction
     const validPatterns = PATTERNS.filter(p => p.firstJumpDir === nextDir);
-    if (validPatterns.length === 0) return false;
+    if (validPatterns.length === 0) {
+        console.warn('[generateNextPattern] No patterns for direction', nextDir);
+        return false;
+    }
     
     // Shuffle for variety
     const shuffled = [...validPatterns].sort(() => Math.random() - 0.5);
     
-    for (const pattern of shuffled) {
-        // Try original and mirrored
-        const variants = [pattern];
-        if (pattern.firstJumpDir !== nextDir) {
-            variants.push(mirrorPattern(pattern));
+    for (const p of shuffled) {
+        // INFINITE CANVAS: Place pattern at comfortable jump distance, no bounds check
+        const jumpX = nextDir * JUMP_COMFORTABLE_X;
+        const originX = genState.x + jumpX;
+        
+        // Calculate origin Y based on comfortable jump from player position
+        const firstWallSize = p.walls[0].height;
+        const maxHalfHeight = getMaxWallHalfHeight(firstWallSize);
+        
+        // Start with comfortable jump distance
+        let originY = genState.y + JUMP_COMFORTABLE_Y;
+        
+        // Calculate minimum Y needed to avoid overlap (if any)
+        const minOriginY = genState.highestY - PATTERN_GAP - maxHalfHeight;
+        
+        // Only push up if needed AND if the jump would still be reachable
+        if (originY > minOriginY) {
+            const pushJumpDy = minOriginY - genState.y;
+            if (isJumpReachable(jumpX, pushJumpDy)) {
+                originY = minOriginY; // Safe to push up
+            }
+            // Otherwise keep comfortable Y - patterns are designed to not self-overlap
         }
         
-        for (const p of variants) {
-            if (p.firstJumpDir !== nextDir) continue;
-            
-            // Calculate origin X - jump from current position
-            const jumpX = nextDir * JUMP_COMFORTABLE_X;
-            const originX = genState.x + jumpX;
-            
-            // Check bounds
-            if (!patternFitsInBounds(p, originX)) continue;
-            
-            // Calculate origin Y using MAX possible wall height for safety
-            // First wall (at dy=0) BOTTOM must be above genState.highestY
-            // genState.highestY = TOP of previous highest wall
-            // New wall CENTER = genState.highestY - PATTERN_GAP - maxHalfHeight
-            const firstWallSize = p.walls[0].height;
-            const maxHalfHeight = getMaxWallHalfHeight(firstWallSize);
-            const originY = genState.highestY - PATTERN_GAP - maxHalfHeight;
-            
-            // Verify jump is reachable from current position to first wall center
-            const jumpDy = originY - genState.y;
-            if (!isJumpReachable(jumpX, jumpDy)) continue;
-            
-            // Spawn the pattern - returns actual highest Y
-            const actualHighestY = spawnPattern(p, originX, originY);
-            
-            // Update state using ACTUAL highest point
-            genState.x = originX + p.exitDx;
-            genState.y = originY + p.exitDy;
-            genState.highestY = actualHighestY;
-            genState.lastDir = p.exitDx >= 0 ? 1 : -1;
-            
-            return true;
+        // Verify final jump is reachable
+        const jumpDy = originY - genState.y;
+        if (!isJumpReachable(jumpX, jumpDy)) {
+            console.log('[generateNextPattern] Jump not reachable for', p.name, 'dx:', jumpX, 'dy:', jumpDy);
+            continue;
+        }
+        
+        console.log('[generateNextPattern] Spawning pattern:', p.name, 'at', originX, originY);
+        
+        // Spawn the pattern - returns actual highest Y
+        const actualHighestY = spawnPattern(p, originX, originY);
+        
+        // Update state - use highestY as reference for next jump to guarantee no overlap
+        genState.x = originX + p.exitDx;
+        genState.y = actualHighestY; // Player reference at TOP of highest wall, not center
+        genState.highestY = actualHighestY;
+        genState.lastDir = p.exitDx >= 0 ? 1 : -1;
+        
+        return true;
+    }
+    
+    console.warn('[generateNextPattern] All patterns failed, using fallback');
+    // Fallback: first available pattern
+    const fallback = PATTERNS[0];
+    const jumpX = nextDir * JUMP_COMFORTABLE_X;
+    const originX = genState.x + jumpX;
+    const firstWallSize = fallback.walls[0].height;
+    const maxHalfHeight = getMaxWallHalfHeight(firstWallSize);
+    let originY = genState.y + JUMP_COMFORTABLE_Y;
+    const minOriginY = genState.highestY - PATTERN_GAP - maxHalfHeight;
+    // Only push up if jump would still be reachable
+    if (originY > minOriginY) {
+        const pushJumpDy = minOriginY - genState.y;
+        if (isJumpReachable(jumpX, pushJumpDy)) {
+            originY = minOriginY;
         }
     }
     
-    // Fallback: simple step pattern
-    const stepPattern = PATTERNS.find(p => p.name.includes('step') && p.firstJumpDir === nextDir) || PATTERNS[0];
-    const originX = (bounds.minX + bounds.maxX) / 2;
-    const firstWallSize = stepPattern.walls[0].height;
-    const maxHalfHeight = getMaxWallHalfHeight(firstWallSize);
-    const originY = genState.highestY - PATTERN_GAP - maxHalfHeight;
-    
-    const actualHighestY = spawnPattern(stepPattern, originX, originY);
-    genState.x = originX + stepPattern.exitDx;
-    genState.y = originY + stepPattern.exitDy;
+    const actualHighestY = spawnPattern(fallback, originX, originY);
+    genState.x = originX + fallback.exitDx;
+    genState.y = actualHighestY; // Player reference at TOP of highest wall
     genState.highestY = actualHighestY;
-    genState.lastDir = stepPattern.exitDx >= 0 ? 1 : -1;
+    genState.lastDir = fallback.exitDx >= 0 ? 1 : -1;
     
     return true;
 }
@@ -507,14 +557,21 @@ function resetGame() {
     walls.push(secondWall);
     Matter.World.add(world, secondWall);
 
-    // Initialize generation state - start from left wall position
-    // Player starts on right side of left wall, so first jump will be to the RIGHT
-    const startWallTop = startWallY - startWallHeight / 2;
+    // Initialize generation state
+    // Player starts at BOTTOM of left wall (near floor), not at wall center
+    const playerStartY = floorTopY - CONFIG.PLAYER_SIZE / 2; // Player's actual Y position
+    
+    // highestY should be based on player's reachable range, not start wall top
+    // Start walls are at different X positions than generated patterns - no overlap concern
+    // First pattern should be placed at comfortable jump distance from player
+    // JUMP_COMFORTABLE_Y is negative (e.g., -140), so add it to go UP
+    const initialHighestY = playerStartY + JUMP_COMFORTABLE_Y; // Where player can comfortably reach
+    
     genState = {
-        x: leftWallX,
-        y: startWallY,           // Center of start wall
-        highestY: startWallTop,  // Top of start wall
-        lastDir: -1              // Player is on right side, next jump goes right (opposite of -1)
+        x: leftWallX,            // Player starts on left wall
+        y: playerStartY,         // Player's actual position near floor
+        highestY: initialHighestY,  // Based on player's reachable range
+        lastDir: -1              // Player on right side of wall, next jump goes RIGHT
     };
 
     // Player spawns on right side of left wall
