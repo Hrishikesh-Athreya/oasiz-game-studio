@@ -234,8 +234,14 @@ let highestPoint = 0;
 let startY = 0;
 
 // Camera / Level Gen
+let cameraX = 0;
 let cameraY = 0;
 let wallsGenerated = 0;
+
+// Camera smoothing config
+const CAMERA_SMOOTH_X = 0.08; // Horizontal follow speed
+const CAMERA_SMOOTH_Y = 0.1;  // Vertical follow speed (up)
+const CAMERA_SMOOTH_Y_DOWN = 0.05; // Vertical follow speed (down, slower)
 
 // Physics State
 let isWallSliding = false;
@@ -513,6 +519,7 @@ function resetGame() {
     PATTERNS = loadPatterns();
 
     score = 0;
+    cameraX = 0;
     cameraY = 0;
     walls = [];
     wallJumpLockout = 0;
@@ -528,15 +535,7 @@ function resetGame() {
     });
     Matter.World.add(world, ground);
 
-    const boundaryHeight = 200000;
-    const boundaryCenterY = -50000;
-    const leftBoundary = Matter.Bodies.rectangle(-CONFIG.BOUNDARY_THICKNESS / 2, boundaryCenterY, CONFIG.BOUNDARY_THICKNESS, boundaryHeight, {
-        isStatic: true, label: 'boundary', render: { visible: false }
-    });
-    const rightBoundary = Matter.Bodies.rectangle(w + CONFIG.BOUNDARY_THICKNESS / 2, boundaryCenterY, CONFIG.BOUNDARY_THICKNESS, boundaryHeight, {
-        isStatic: true, label: 'boundary', render: { visible: false }
-    });
-    Matter.World.add(world, [leftBoundary, rightBoundary]);
+    // INFINITE CANVAS: No left/right boundaries - camera follows player horizontally
 
     // Initial Walls using X-Y pixel system
     // Place two starter walls - one on left side, one on right side
@@ -558,19 +557,13 @@ function resetGame() {
     Matter.World.add(world, secondWall);
 
     // Initialize generation state
-    // Player starts at BOTTOM of left wall (near floor), not at wall center
-    const playerStartY = floorTopY - CONFIG.PLAYER_SIZE / 2; // Player's actual Y position
-    
-    // highestY should be based on player's reachable range, not start wall top
-    // Start walls are at different X positions than generated patterns - no overlap concern
-    // First pattern should be placed at comfortable jump distance from player
-    // JUMP_COMFORTABLE_Y is negative (e.g., -140), so add it to go UP
-    const initialHighestY = playerStartY + JUMP_COMFORTABLE_Y; // Where player can comfortably reach
+    // Start wall top is the reference for first pattern placement
+    const startWallTop = startWallY - startWallHeight / 2;
     
     genState = {
         x: leftWallX,            // Player starts on left wall
-        y: playerStartY,         // Player's actual position near floor
-        highestY: initialHighestY,  // Based on player's reachable range
+        y: startWallTop,         // Reference at TOP of start wall (consistent with pattern exits)
+        highestY: startWallTop,  // First pattern must be above start wall top
         lastDir: -1              // Player on right side of wall, next jump goes RIGHT
     };
 
@@ -781,15 +774,31 @@ function update() {
         return;
     }
 
-    // Camera
+    // Camera - smooth follow on both axes
     if (player) {
-        const targetY = player.position.y - window.innerHeight * 0.6;
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        
+        // Target: center player horizontally, player at 60% from top vertically
+        const targetX = player.position.x - w / 2;
+        const targetY = player.position.y - h * 0.6;
+        
+        // Smooth horizontal centering (always)
+        cameraX += (targetX - cameraX) * CAMERA_SMOOTH_X;
+        
+        // Smooth vertical follow (faster up, limited down)
         if (targetY < cameraY) {
-            cameraY += (targetY - cameraY) * 0.1;
+            // Going up - follow faster
+            cameraY += (targetY - cameraY) * CAMERA_SMOOTH_Y;
+        } else {
+            // Going down - limit to max 20px below current position
+            const maxDownY = cameraY + 20;
+            const clampedTargetY = Math.min(targetY, maxDownY);
+            cameraY += (clampedTargetY - cameraY) * CAMERA_SMOOTH_Y_DOWN;
         }
 
-        // Death
-        if (player.position.y > cameraY + window.innerHeight + 100) {
+        // Death - fell too far below camera
+        if (player.position.y > cameraY + h + 100) {
             gameOver();
         }
 
@@ -803,8 +812,8 @@ function update() {
     }
 
     Matter.Render.lookAt(render, {
-        min: { x: 0, y: cameraY },
-        max: { x: window.innerWidth, y: cameraY + window.innerHeight }
+        min: { x: cameraX, y: cameraY },
+        max: { x: cameraX + window.innerWidth, y: cameraY + window.innerHeight }
     });
 
     generateLevelStep();
