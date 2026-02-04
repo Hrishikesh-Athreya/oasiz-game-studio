@@ -1,6 +1,7 @@
 
 import './style.css';
 import Matter from 'matter-js';
+import { drawMonkey, updateMonkeyAnimation, MonkeyState } from './MonkeySprite';
 
 // --- CONFIGURATION ---
 const CONFIG = {
@@ -93,6 +94,59 @@ const WALL_HEIGHTS: Record<WallSize, { min: number; max: number }> = {
     'medium': { min: 180, max: 260 },
     'tall': { min: 280, max: 380 },
 };
+
+// --- SPECIAL WALL TYPES ---
+type WallType = 'normal' | 'disappearing' | 'timed-danger' | 'one-sided-danger';
+
+// Wall state tracking for special behaviors
+interface WallState {
+    type: WallType;
+    firstTouchTime: number | null;  // Timestamp of first contact
+    dangerSide?: 'left' | 'right';  // For one-sided danger walls
+    isActive: boolean;              // Whether wall is still active
+    opacity: number;                // For fade effects
+    lastSwitchTime: number;         // For one-sided walls: when danger side last switched
+}
+
+// Map to track wall states by body id
+const wallStates: Map<number, WallState> = new Map();
+
+// Special wall timing constants
+const DISAPPEAR_DELAY_MS = 3000;    // 1 second before wall disappears
+const DANGER_TIME_MS = 4000;        // 4 seconds on wall = game over
+const DANGER_SWITCH_MS = 4000;      // 4 seconds between danger side switches
+
+// Wall type spawn chances (must sum to 1.0)
+const WALL_TYPE_CHANCES = {
+    'normal': 0.55,           // 55% normal walls
+    'disappearing': 0.25,     // 25% disappearing
+    'timed-danger': 0.20,     // 20% timed danger
+    'one-sided-danger': 0.00, // DISABLED
+};
+
+// Get random wall type based on chances (only after VARIETY_START_LEVEL)
+function getRandomWallType(): WallType {
+    // Only normal walls until player reaches variety level
+    if (level < VARIETY_START_LEVEL) return 'normal';
+    
+    const rand = Math.random();
+    let cumulative = 0;
+    for (const [type, chance] of Object.entries(WALL_TYPE_CHANCES)) {
+        cumulative += chance;
+        if (rand < cumulative) return type as WallType;
+    }
+    return 'normal';
+}
+
+// Get wall color based on type
+function getWallColor(type: WallType, dangerSide?: 'left' | 'right'): string {
+    switch (type) {
+        case 'disappearing': return '#FFAA00';      // Orange - disappearing
+        case 'timed-danger': return '#FF0000';      // Red - timed danger
+        case 'one-sided-danger': return '#AA00FF';  // Purple - one-sided
+        default: return '#00AAFF';                  // Blue - normal
+    }
+}
 
 // --- PATTERN SYSTEM (X-Y Pixel Offsets) ---
 // Patterns use relative dx/dy pixel offsets from pattern origin
@@ -238,6 +292,14 @@ let cameraX = 0;
 let cameraY = 0;
 let wallsGenerated = 0;
 
+// Level tracking
+let level = 0;
+const countedWalls: Set<number> = new Set(); // Track wall IDs already counted
+const VARIETY_START_LEVEL = 5; // Start spawning special walls after this level
+
+// Ground death tracking - game over if player returns to ground after leaving
+let hasLeftGround = false;
+
 // Camera smoothing config
 const CAMERA_SMOOTH_X = 0.08; // Horizontal follow speed
 const CAMERA_SMOOTH_Y = 0.1;  // Vertical follow speed (up)
@@ -261,6 +323,14 @@ let hasUsedAirFlip = false;
 let lastJumpDir = 0; // -1 = left, 1 = right
 let isFlipThrust = false;
 
+// Monkey animation state
+let monkeyFacingDir: -1 | 1 = 1;
+let isBackflipping = false;
+let backflipAngle = 0;
+let backflipSpeed = 0;
+const BACKFLIP_ROTATION_SPEED = 12; // radians per second
+let lastFrameTime = performance.now();
+
 // --- FACTORIES ---
 
 function createPlayer(x: number, y: number) {
@@ -270,20 +340,47 @@ function createPlayer(x: number, y: number) {
         friction: 0.8,
         frictionAir: 0.02,
         inertia: Infinity,
-        render: { fillStyle: '#fff' }
+        render: { visible: false } // Hidden - we draw custom monkey sprite
     });
 }
 
-function createWall(x: number, y: number, height: number, color: string, patternName?: string, wallIndex?: number) {
+function createWall(
+    x: number, 
+    y: number, 
+    height: number, 
+    color: string, 
+    patternName?: string, 
+    wallIndex?: number,
+    wallType: WallType = 'normal'
+) {
+    const actualColor = wallType === 'normal' ? color : getWallColor(wallType);
+    const dangerSide = wallType === 'one-sided-danger' ? (Math.random() < 0.5 ? 'left' : 'right') : undefined;
+    
     const wall = Matter.Bodies.rectangle(x, y, CONFIG.WALL_WIDTH, height, {
         isStatic: true,
         label: 'wall',
         restitution: 0,
-        render: { fillStyle: color }
+        render: { fillStyle: actualColor }
     });
+    
     // Store debug info
     (wall as any).patternName = patternName || 'start';
     (wall as any).wallIndex = wallIndex ?? 0;
+    (wall as any).wallType = wallType;
+    (wall as any).dangerSide = dangerSide;
+    
+    // Register wall state for special types
+    if (wallType !== 'normal') {
+        wallStates.set(wall.id, {
+            type: wallType,
+            firstTouchTime: null,
+            dangerSide,
+            isActive: true,
+            opacity: 1,
+            lastSwitchTime: Date.now(),
+        });
+    }
+    
     return wall;
 }
 
@@ -387,7 +484,10 @@ function spawnPattern(pattern: Pattern, originX: number, originY: number): numbe
         
         console.log(`[spawnPattern] Wall ${i+1}: dy=${wallDef.dy}, y=${y.toFixed(0)}, h=${height.toFixed(0)}, top=${wallTop.toFixed(0)}, bottom=${wallBottom.toFixed(0)}`);
         
-        const wall = createWall(x, y, height, color, pattern.name, i + 1);
+        // Randomize wall type (but keep first wall of pattern normal for fairness)
+        const wallType = i === 0 ? 'normal' : getRandomWallType();
+        
+        const wall = createWall(x, y, height, color, pattern.name, i + 1, wallType);
         walls.push(wall);
         Matter.World.add(world, wall);
         wallsGenerated++;
@@ -524,6 +624,16 @@ function resetGame() {
     walls = [];
     wallJumpLockout = 0;
     wallsGenerated = 0;
+    wallStates.clear(); // Clear special wall states
+    level = 0;
+    countedWalls.clear(); // Reset level tracking
+    hasLeftGround = false; // Reset ground death tracking
+    
+    // Reset monkey animation state
+    monkeyFacingDir = 1;
+    isBackflipping = false;
+    backflipAngle = 0;
+    backflipSpeed = 0;
 
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -627,6 +737,43 @@ function attachPhysicsEvents() {
 
                 const isWallOnLeft = wallBody.position.x < playerBody.position.x;
                 currentWallSide = isWallOnLeft ? -1 : 1;
+                
+                // Level tracking: count each unique wall we stick to
+                if (!countedWalls.has(wallBody.id)) {
+                    countedWalls.add(wallBody.id);
+                    level++;
+                    // Update level display
+                    const levelEl = document.getElementById('level-value');
+                    if (levelEl) levelEl.textContent = level.toString();
+                }
+                
+                // Handle special wall types
+                const wallState = wallStates.get(wallBody.id);
+                if (wallState && wallState.isActive) {
+                    const now = Date.now();
+                    
+                    // Record first touch time
+                    if (wallState.firstTouchTime === null) {
+                        wallState.firstTouchTime = now;
+                    }
+                    
+                    const touchDuration = now - wallState.firstTouchTime;
+                    
+                    // One-sided danger: instant death if landing on danger side
+                    if (wallState.type === 'one-sided-danger') {
+                        const playerSide = isWallOnLeft ? 'right' : 'left'; // Player is on this side of wall
+                        if (playerSide === wallState.dangerSide) {
+                            gameOver();
+                            return;
+                        }
+                    }
+                    
+                    // Timed danger: death if on wall for too long
+                    if (wallState.type === 'timed-danger' && touchDuration >= DANGER_TIME_MS) {
+                        gameOver();
+                        return;
+                    }
+                }
 
                 // LOCKOUT CHECK
                 if (wallJumpLockout <= 0) {
@@ -636,6 +783,11 @@ function attachPhysicsEvents() {
                     });
                 }
             } else if (labels.includes('ground')) {
+                // Game over if player returns to ground after leaving
+                if (hasLeftGround) {
+                    gameOver();
+                    return;
+                }
                 canJump = true;
                 isWallSliding = false;
                 hasJumpedThisPress = false;
@@ -654,6 +806,10 @@ function attachPhysicsEvents() {
                 // For simplicity, yes.
                 isWallSliding = false;
                 currentWallSide = 0;
+            }
+            // Track when player leaves ground
+            if (labels.includes('player') && labels.includes('ground')) {
+                hasLeftGround = true;
             }
         });
     });
@@ -702,6 +858,7 @@ function handlePressStart() {
         lastJumpDir = horizontalDir;
         canAirFlip = true;
         hasUsedAirFlip = false;
+        monkeyFacingDir = horizontalDir as -1 | 1; // Face jump direction
     }
 }
 
@@ -732,6 +889,12 @@ function performAirFlip() {
     hasJumpedThisPress = true;
     hasUsedAirFlip = true;
     canAirFlip = false;
+    
+    // Trigger backflip animation
+    isBackflipping = true;
+    backflipAngle = 0;
+    backflipSpeed = BACKFLIP_ROTATION_SPEED * flipDir; // Spin in direction of flip
+    monkeyFacingDir = flipDir as -1 | 1;
 }
 
 function handlePressEnd() {
@@ -766,6 +929,126 @@ window.addEventListener('touchcancel', (e) => {
     isThrusting = false;
 }, { passive: false });
 
+// Keyboard controls - Space to jump
+window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        handlePressStart();
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault();
+        handlePressEnd();
+    }
+});
+
+
+// --- SPECIAL WALL UPDATE ---
+function updateSpecialWalls() {
+    const now = Date.now();
+    
+    wallStates.forEach((state, wallId) => {
+        if (!state.isActive) return;
+        
+        // One-sided danger walls: switch danger side every 4s (always runs, even untouched)
+        if (state.type === 'one-sided-danger') {
+            const timeSinceSwitch = now - state.lastSwitchTime;
+            if (timeSinceSwitch >= DANGER_SWITCH_MS) {
+                // Switch danger side
+                state.dangerSide = state.dangerSide === 'left' ? 'right' : 'left';
+                state.lastSwitchTime = now;
+                
+                // Update the wall body's stored dangerSide
+                const wallBody = walls.find(w => w.id === wallId);
+                if (wallBody) {
+                    (wallBody as any).dangerSide = state.dangerSide;
+                }
+            }
+        }
+        
+        // Skip touch-based effects if wall hasn't been touched
+        if (state.firstTouchTime === null) return;
+        
+        const touchDuration = now - state.firstTouchTime;
+        
+        // Disappearing walls: fade and remove after delay
+        if (state.type === 'disappearing') {
+            // Calculate fade progress (0 to 1 over the delay period)
+            const fadeProgress = Math.min(touchDuration / DISAPPEAR_DELAY_MS, 1);
+            state.opacity = 1 - fadeProgress;
+            
+            // Find the wall body and update its appearance
+            const wallBody = walls.find(w => w.id === wallId);
+            if (wallBody) {
+                // Update opacity visually
+                const baseColor = getWallColor('disappearing');
+                const alpha = Math.max(0, state.opacity);
+                wallBody.render.fillStyle = `rgba(255, 170, 0, ${alpha})`;
+                
+                // Remove wall when fully faded
+                if (touchDuration >= DISAPPEAR_DELAY_MS) {
+                    state.isActive = false;
+                    Matter.World.remove(world, wallBody);
+                    walls = walls.filter(w => w.id !== wallId);
+                    wallStates.delete(wallId);
+                }
+            }
+        }
+        
+        // Timed danger walls: visual warning as time runs out
+        if (state.type === 'timed-danger') {
+            const wallBody = walls.find(w => w.id === wallId);
+            if (wallBody) {
+                // Flash effect as danger approaches
+                const progress = touchDuration / DANGER_TIME_MS;
+                const flash = Math.sin(progress * Math.PI * 8) * 0.3 + 0.7;
+                const r = Math.floor(255 * flash);
+                wallBody.render.fillStyle = `rgb(${r}, 0, 0)`;
+            }
+        }
+    });
+}
+
+// Draw danger side indicator for one-sided walls (called from render)
+function drawOneSidedIndicators(ctx: CanvasRenderingContext2D) {
+    walls.forEach(wall => {
+        const wallState = wallStates.get(wall.id);
+        if (wallState?.type === 'one-sided-danger' && wallState.isActive) {
+            const halfWidth = CONFIG.WALL_WIDTH / 2;
+            const halfHeight = (wall as any).height ? (wall as any).height / 2 : 100;
+            
+            // Get actual wall bounds
+            const bounds = wall.bounds;
+            const wallHeight = bounds.max.y - bounds.min.y;
+            
+            // Draw danger stripe on the dangerous side
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.6)';
+            
+            const stripeWidth = 8;
+            if (wallState.dangerSide === 'left') {
+                // Danger on left side - draw red stripe on left edge
+                ctx.fillRect(
+                    wall.position.x - halfWidth - cameraX,
+                    wall.position.y - wallHeight/2 - cameraY,
+                    stripeWidth,
+                    wallHeight
+                );
+            } else {
+                // Danger on right side - draw red stripe on right edge
+                ctx.fillRect(
+                    wall.position.x + halfWidth - stripeWidth - cameraX,
+                    wall.position.y - wallHeight/2 - cameraY,
+                    stripeWidth,
+                    wallHeight
+                );
+            }
+            ctx.restore();
+        }
+    });
+}
 
 // --- MAIN LOOP ---
 function update() {
@@ -773,6 +1056,9 @@ function update() {
         requestAnimationFrame(update);
         return;
     }
+    
+    // Update special wall behaviors
+    updateSpecialWalls();
 
     // Camera - smooth follow on both axes
     if (player) {
@@ -817,6 +1103,39 @@ function update() {
     });
 
     generateLevelStep();
+    
+    // Update monkey animation timing
+    const now = performance.now();
+    const deltaMs = now - lastFrameTime;
+    lastFrameTime = now;
+    updateMonkeyAnimation(deltaMs);
+    
+    // Update backflip rotation
+    if (isBackflipping) {
+        backflipAngle += backflipSpeed * (deltaMs / 1000);
+        // Complete backflip after full rotation
+        if (Math.abs(backflipAngle) >= Math.PI * 2) {
+            isBackflipping = false;
+            backflipAngle = 0;
+            backflipSpeed = 0;
+        }
+    }
+    
+    // Draw monkey sprite
+    if (player) {
+        const ctx = render.context;
+        const monkeyState: MonkeyState = {
+            x: player.position.x - cameraX,
+            y: player.position.y - cameraY,
+            facingDir: monkeyFacingDir,
+            isOnWall: isWallSliding,
+            isOnGround: canJump && !isWallSliding,
+            isBackflipping: isBackflipping,
+            backflipAngle: backflipAngle,
+            velocityY: player.velocity.y
+        };
+        drawMonkey(ctx, monkeyState, CONFIG.PLAYER_SIZE);
+    }
 
     requestAnimationFrame(update);
 }
@@ -863,7 +1182,7 @@ function initUI() {
 Matter.Runner.run(Matter.Runner.create(), engine);
 Matter.Render.run(render);
 
-// Debug: Draw pattern labels on walls
+// Debug: Draw pattern labels on walls + special wall indicators
 Matter.Events.on(render, 'afterRender', () => {
     const ctx = render.context;
     const bounds = render.bounds;
@@ -875,18 +1194,42 @@ Matter.Events.on(render, 'afterRender', () => {
     for (const wall of walls) {
         const patternName = (wall as any).patternName as string;
         const wallIndex = (wall as any).wallIndex as number;
+        const wallType = (wall as any).wallType as WallType;
+        const dangerSide = (wall as any).dangerSide as 'left' | 'right' | undefined;
         
         // Transform world coords to screen coords
         const screenX = wall.position.x - bounds.min.x;
         const screenY = wall.position.y - bounds.min.y;
+        const wallHeight = wall.bounds.max.y - wall.bounds.min.y;
+        const halfWidth = CONFIG.WALL_WIDTH / 2;
         
         // Only draw if on screen
         if (screenY > -100 && screenY < window.innerHeight + 100) {
+            // Draw danger stripe for one-sided walls
+            if (wallType === 'one-sided-danger' && dangerSide) {
+                const wallState = wallStates.get(wall.id);
+                if (wallState?.isActive) {
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
+                    const stripeWidth = 10;
+                    if (dangerSide === 'left') {
+                        ctx.fillRect(screenX - halfWidth, screenY - wallHeight/2, stripeWidth, wallHeight);
+                    } else {
+                        ctx.fillRect(screenX + halfWidth - stripeWidth, screenY - wallHeight/2, stripeWidth, wallHeight);
+                    }
+                }
+            }
+            
             // Pattern name background
             const label = `${patternName}`;
             const indexLabel = `#${wallIndex}`;
             
-            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            // Color-coded background based on wall type
+            let bgColor = 'rgba(0,0,0,0.7)';
+            if (wallType === 'disappearing') bgColor = 'rgba(255,170,0,0.8)';
+            else if (wallType === 'timed-danger') bgColor = 'rgba(255,0,0,0.8)';
+            else if (wallType === 'one-sided-danger') bgColor = 'rgba(170,0,255,0.8)';
+            
+            ctx.fillStyle = bgColor;
             ctx.fillRect(screenX - 35, screenY - 20, 70, 28);
             
             ctx.fillStyle = '#FFD700';
