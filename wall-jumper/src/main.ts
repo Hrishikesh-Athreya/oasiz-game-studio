@@ -26,6 +26,63 @@ const CONFIG = {
     ACTIVE_WALL_CAP: 24
 };
 
+// --- WALL SPRITE SYSTEM ---
+const wallImages: Map<string, HTMLImageElement> = new Map();
+let wallSpritesLoaded = false;
+
+const WALL_SPRITE_PATHS: Record<string, string> = {
+    // Normal walls
+    static1: '/assets/static_platform_1.png',
+    static2: '/assets/static_platform_2.png',
+    // Spiked wall (disappearing)
+    spike1: '/assets/spiked_wall/spike_platform_0_01.png',
+    spike2: '/assets/spiked_wall/spike_platform_0_02.png',
+    spike3: '/assets/spiked_wall/spike_platform_0_03.png',
+    spike4: '/assets/spiked_wall/spiked_platform_0_04.png',
+    // Lightning wall (timed-danger)
+    lightning1: '/assets/lightning_wall/1.png',
+    lightning2: '/assets/lightning_wall/2.png',
+    lightning3: '/assets/lightning_wall/3.png',
+    lightning3_5: '/assets/lightning_wall/3.5.png',
+    lightning5: '/assets/lightning_wall/5.png',
+    lightning6: '/assets/lightning_wall/6.png',
+    lightning7: '/assets/lightning_wall/7.png',
+    lightning8: '/assets/lightning_wall/8.png',
+    lightning9: '/assets/lightning_wall/9.png',
+    lightning10: '/assets/lightning_wall/10.png',
+    // Background
+    bg: '/assets/nature_background.png',
+};
+
+function loadWallSprites(): Promise<void> {
+    return new Promise((resolve) => {
+        const entries = Object.entries(WALL_SPRITE_PATHS);
+        let loaded = 0;
+        entries.forEach(([key, path]) => {
+            const img = new Image();
+            img.onload = () => {
+                wallImages.set(key, img);
+                loaded++;
+                if (loaded === entries.length) {
+                    wallSpritesLoaded = true;
+                    console.log('[WallSprites] All wall sprites loaded');
+                    resolve();
+                }
+            };
+            img.onerror = () => {
+                console.error(`[WallSprites] Failed to load ${path}`);
+                loaded++;
+                if (loaded === entries.length) {
+                    wallSpritesLoaded = true;
+                    resolve();
+                }
+            };
+            img.src = path;
+        });
+    });
+}
+loadWallSprites();
+
 // --- 10-COLUMN COORDINATE SYSTEM ---
 const NUM_COLUMNS = 10;
 const COLUMN_MARGIN = 0.05; // 5% margin on each side
@@ -106,14 +163,18 @@ interface WallState {
     isActive: boolean;              // Whether wall is still active
     opacity: number;                // For fade effects
     lastSwitchTime: number;         // For one-sided walls: when danger side last switched
+    createdTime: number;            // For lightning wall passive cycle
+    isSpent: boolean;               // For spiked walls: true after countdown completes
 }
 
 // Map to track wall states by body id
 const wallStates: Map<number, WallState> = new Map();
 
 // Special wall timing constants
-const DISAPPEAR_DELAY_MS = 3000;    // 1 second before wall disappears
-const DANGER_TIME_MS = 4000;        // 4 seconds on wall = game over
+const DISAPPEAR_DELAY_MS = 3000;    // 3 seconds before spiked wall finishes countdown
+const LIGHTNING_SAFE_MS = 4000;     // 4 seconds safe period
+const LIGHTNING_DANGER_MS = 1000;   // 1 second unjumpable period
+const LIGHTNING_CYCLE_MS = LIGHTNING_SAFE_MS + LIGHTNING_DANGER_MS; // 5s total cycle
 const DANGER_SWITCH_MS = 4000;      // 4 seconds between danger side switches
 
 // Wall type spawn chances (must sum to 1.0)
@@ -283,6 +344,7 @@ const render = Matter.Render.create({
 let player: Matter.Body | null = null;
 let walls: Matter.Body[] = [];
 let gameActive = false;
+let gamePaused = false;
 let score = 0;
 let highestPoint = 0;
 let startY = 0;
@@ -302,9 +364,14 @@ let hasLeftGround = false;
 let resetGraceFrames = 0; // Ignore collision events for a few frames after reset
 
 // Camera smoothing config
-const CAMERA_SMOOTH_X = 0.08; // Horizontal follow speed
-const CAMERA_SMOOTH_Y = 0.1;  // Vertical follow speed (up)
-const CAMERA_SMOOTH_Y_DOWN = 0.05; // Vertical follow speed (down, slower)
+const CAMERA_SMOOTH_X = 0.06; // Horizontal follow speed
+const CAMERA_SMOOTH_Y = 0.06;  // Vertical follow speed (up)
+const CAMERA_SMOOTH_Y_DOWN = 0.04; // Vertical follow speed (down, slower)
+
+// Smoothed camera look-ahead values (interpolated each frame, never jump)
+let smoothLookAheadX = 0;
+let smoothLookAheadY = 0;
+const LOOK_AHEAD_LERP = 0.04; // How fast the look-ahead eases toward its target
 
 // Physics State
 let isWallSliding = false;
@@ -361,7 +428,7 @@ function createWall(
         isStatic: true,
         label: 'wall',
         restitution: 0,
-        render: { fillStyle: actualColor }
+        render: { visible: false } // Hidden - we draw custom wall sprites
     });
     
     // Store debug info
@@ -369,6 +436,8 @@ function createWall(
     (wall as any).wallIndex = wallIndex ?? 0;
     (wall as any).wallType = wallType;
     (wall as any).dangerSide = dangerSide;
+    // Alternate static platform sprite for normal walls
+    (wall as any).staticVariant = Math.random() < 0.5 ? 1 : 2;
     
     // Register wall state for special types
     if (wallType !== 'normal') {
@@ -379,6 +448,8 @@ function createWall(
             isActive: true,
             opacity: 1,
             lastSwitchTime: Date.now(),
+            createdTime: Date.now(),
+            isSpent: false,
         });
     }
     
@@ -631,6 +702,10 @@ function resetGame() {
     hasLeftGround = false; // Reset ground death tracking
     resetGraceFrames = 30; // Ignore collision events for 30 frames after reset
     
+    // Reset camera look-ahead
+    smoothLookAheadX = 0;
+    smoothLookAheadY = 0;
+    
     // Reset monkey animation state
     // Player starts on right side of left wall, facing RIGHT towards the right wall
     monkeyFacingDir = -1;
@@ -644,7 +719,7 @@ function resetGame() {
 
     // Ground
     const ground = Matter.Bodies.rectangle(w / 2, h - CONFIG.FLOOR_HEIGHT / 2, w + 2000, CONFIG.FLOOR_HEIGHT, {
-        isStatic: true, label: 'ground', render: { fillStyle: '#333' }
+        isStatic: true, label: 'ground', render: { visible: false }
     });
     Matter.World.add(world, ground);
 
@@ -737,6 +812,15 @@ function attachPhysicsEvents() {
                 hasJumpedThisPress = false;
                 canAirFlip = false;
                 hasUsedAirFlip = false;
+                
+                // Cancel backflip animation and flip thrust on wall cling
+                if (isBackflipping) {
+                    isBackflipping = false;
+                    backflipAngle = 0;
+                    backflipSpeed = 0;
+                }
+                isThrusting = false;
+                isFlipThrust = false;
 
                 const isWallOnLeft = wallBody.position.x < playerBody.position.x;
                 currentWallSide = isWallOnLeft ? -1 : 1;
@@ -752,29 +836,38 @@ function attachPhysicsEvents() {
                 
                 // Handle special wall types
                 const wallState = wallStates.get(wallBody.id);
-                if (wallState && wallState.isActive) {
+                if (wallState) {
                     const now = Date.now();
                     
-                    // Record first touch time
-                    if (wallState.firstTouchTime === null) {
-                        wallState.firstTouchTime = now;
-                    }
-                    
-                    const touchDuration = now - wallState.firstTouchTime;
-                    
-                    // One-sided danger: instant death if landing on danger side
-                    if (wallState.type === 'one-sided-danger') {
-                        const playerSide = isWallOnLeft ? 'right' : 'left'; // Player is on this side of wall
-                        if (playerSide === wallState.dangerSide) {
-                            gameOver();
-                            return;
-                        }
-                    }
-                    
-                    // Timed danger: death if on wall for too long
-                    if (wallState.type === 'timed-danger' && touchDuration >= DANGER_TIME_MS) {
+                    // Spent spiked wall = game over (after countdown finishes)
+                    if (wallState.type === 'disappearing' && wallState.isSpent) {
                         gameOver();
                         return;
+                    }
+                    
+                    if (wallState.isActive) {
+                        // Record first touch time (for disappearing/spiked walls)
+                        if (wallState.firstTouchTime === null) {
+                            wallState.firstTouchTime = now;
+                        }
+                        
+                        // One-sided danger: instant death if landing on danger side
+                        if (wallState.type === 'one-sided-danger') {
+                            const playerSide = isWallOnLeft ? 'right' : 'left';
+                            if (playerSide === wallState.dangerSide) {
+                                gameOver();
+                                return;
+                            }
+                        }
+                        
+                        // Lightning wall: passive cycle - kill if on wall during danger phase
+                        if (wallState.type === 'timed-danger') {
+                            const cycleTime = (now - wallState.createdTime) % LIGHTNING_CYCLE_MS;
+                            if (cycleTime >= LIGHTNING_SAFE_MS) {
+                                gameOver();
+                                return;
+                            }
+                        }
                     }
                 }
 
@@ -785,7 +878,7 @@ function attachPhysicsEvents() {
                         y: playerBody.velocity.y > 2 ? 2 : playerBody.velocity.y
                     });
                 }
-            } else if (labels.includes('ground')) {
+            } else if (labels.includes('ground') && (pair.bodyA === player || pair.bodyB === player)) {
                 // Game over if player returns to ground after leaving
                 // Skip during reset grace period to avoid false triggers
                 if (hasLeftGround && resetGraceFrames <= 0) {
@@ -811,8 +904,8 @@ function attachPhysicsEvents() {
                 isWallSliding = false;
                 currentWallSide = 0;
             }
-            // Track when player leaves ground
-            if (labels.includes('player') && labels.includes('ground')) {
+            // Track when player leaves ground - check body reference to avoid stale pairs from World.clear()
+            if (labels.includes('player') && labels.includes('ground') && (pair.bodyA === player || pair.bodyB === player)) {
                 hasLeftGround = true;
             }
         });
@@ -902,39 +995,51 @@ function performAirFlip() {
 }
 
 function handlePressEnd() {
-    // Stop thrusting immediately on release
-    isThrusting = false;
+    // Stop normal jump thrust on release, but let flip thrust continue its full duration
+    if (!isFlipThrust) {
+        isThrusting = false;
+    }
     // Reset so next tap can trigger air flip
     hasJumpedThisPress = false;
 }
 
+// Check if an event target is a UI element (button, modal, toggle, etc.)
+function isUIElement(target: EventTarget | null): boolean {
+    if (!target || !(target instanceof HTMLElement)) return false;
+    // Check if the target or any ancestor is a button, settings modal, or has pointer-events
+    return !!target.closest('button, .toggle-switch, .settings-panel, #settings-modal.active, #game-over.active, #start-screen, #pause-btn');
+}
+
 window.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
+    if (isUIElement(e.target)) return;
     handlePressStart();
 });
 
 window.addEventListener('mouseup', (e) => {
     if (e.button !== 0) return;
+    if (isUIElement(e.target)) return;
     handlePressEnd();
 });
 
 window.addEventListener('touchstart', (e) => {
-    // Only prevent default and handle game input when game is active
-    // This allows the start button to receive click events on mobile
-    if (!gameActive) return;
+    if (!gameActive || gamePaused) return;
+    // Let UI elements handle their own events
+    if (isUIElement(e.target)) return;
     e.preventDefault();
     handlePressStart();
 }, { passive: false });
 
 window.addEventListener('touchend', (e) => {
-    // Only prevent default when game is active
-    if (!gameActive) return;
+    if (!gameActive || gamePaused) return;
+    if (isUIElement(e.target)) return;
     e.preventDefault();
     handlePressEnd();
 }, { passive: false });
 
 window.addEventListener('touchcancel', (e) => {
     if (!gameActive) return;
+    if (isUIElement(e.target)) return;
     e.preventDefault();
     isThrusting = false;
 }, { passive: false });
@@ -966,11 +1071,8 @@ function updateSpecialWalls() {
         if (state.type === 'one-sided-danger') {
             const timeSinceSwitch = now - state.lastSwitchTime;
             if (timeSinceSwitch >= DANGER_SWITCH_MS) {
-                // Switch danger side
                 state.dangerSide = state.dangerSide === 'left' ? 'right' : 'left';
                 state.lastSwitchTime = now;
-                
-                // Update the wall body's stored dangerSide
                 const wallBody = walls.find(w => w.id === wallId);
                 if (wallBody) {
                     (wallBody as any).dangerSide = state.dangerSide;
@@ -978,91 +1080,120 @@ function updateSpecialWalls() {
             }
         }
         
-        // Skip touch-based effects if wall hasn't been touched
-        if (state.firstTouchTime === null) return;
-        
-        const touchDuration = now - state.firstTouchTime;
-        
-        // Disappearing walls: fade and remove after delay
-        if (state.type === 'disappearing') {
-            // Calculate fade progress (0 to 1 over the delay period)
-            const fadeProgress = Math.min(touchDuration / DISAPPEAR_DELAY_MS, 1);
-            state.opacity = 1 - fadeProgress;
-            
-            // Find the wall body and update its appearance
-            const wallBody = walls.find(w => w.id === wallId);
-            if (wallBody) {
-                // Update opacity visually
-                const baseColor = getWallColor('disappearing');
-                const alpha = Math.max(0, state.opacity);
-                wallBody.render.fillStyle = `rgba(255, 170, 0, ${alpha})`;
-                
-                // Remove wall when fully faded
-                if (touchDuration >= DISAPPEAR_DELAY_MS) {
-                    state.isActive = false;
-                    Matter.World.remove(world, wallBody);
-                    walls = walls.filter(w => w.id !== wallId);
-                    wallStates.delete(wallId);
-                }
+        // Spiked (disappearing) walls: animate on touch, become spent after countdown
+        if (state.type === 'disappearing' && state.firstTouchTime !== null && !state.isSpent) {
+            const touchDuration = now - state.firstTouchTime;
+            if (touchDuration >= DISAPPEAR_DELAY_MS) {
+                state.isSpent = true;
             }
         }
         
-        // Timed danger walls: visual warning as time runs out
-        if (state.type === 'timed-danger') {
-            const wallBody = walls.find(w => w.id === wallId);
-            if (wallBody) {
-                // Flash effect as danger approaches
-                const progress = touchDuration / DANGER_TIME_MS;
-                const flash = Math.sin(progress * Math.PI * 8) * 0.3 + 0.7;
-                const r = Math.floor(255 * flash);
-                wallBody.render.fillStyle = `rgb(${r}, 0, 0)`;
-            }
-        }
+        // Lightning (timed-danger) walls: passive cycle, no touch-based update needed
+        // Visual animation is handled in the sprite renderer
     });
 }
 
-// Draw danger side indicator for one-sided walls (called from render)
-function drawOneSidedIndicators(ctx: CanvasRenderingContext2D) {
-    walls.forEach(wall => {
-        const wallState = wallStates.get(wall.id);
-        if (wallState?.type === 'one-sided-danger' && wallState.isActive) {
-            const halfWidth = CONFIG.WALL_WIDTH / 2;
-            const halfHeight = (wall as any).height ? (wall as any).height / 2 : 100;
-            
-            // Get actual wall bounds
-            const bounds = wall.bounds;
-            const wallHeight = bounds.max.y - bounds.min.y;
-            
-            // Draw danger stripe on the dangerous side
+// Get the current sprite key for a wall based on its type and state
+function getWallSpriteKey(wall: Matter.Body): string {
+    const wallType = (wall as any).wallType as WallType;
+    const wallState = wallStates.get(wall.id);
+    const now = Date.now();
+    
+    if (wallType === 'disappearing' && wallState) {
+        // Spiked wall animation
+        if (wallState.isSpent) {
+            return 'spike4';
+        }
+        if (wallState.firstTouchTime !== null) {
+            const touchDuration = now - wallState.firstTouchTime;
+            const progress = Math.min(touchDuration / DISAPPEAR_DELAY_MS, 1);
+            if (progress < 0.33) return 'spike1';
+            if (progress < 0.66) return 'spike2';
+            return 'spike3';
+        }
+        return 'spike1'; // Default untouched state
+    }
+    
+    if (wallType === 'timed-danger' && wallState) {
+        // Lightning wall passive cycle animation
+        const cycleTime = (now - wallState.createdTime) % LIGHTNING_CYCLE_MS;
+        
+        if (cycleTime < LIGHTNING_SAFE_MS) {
+            // Safe phase: animate 1 → 2 → 3 → 3.5
+            const safeProgress = cycleTime / LIGHTNING_SAFE_MS;
+            if (safeProgress < 0.25) return 'lightning1';
+            if (safeProgress < 0.50) return 'lightning2';
+            if (safeProgress < 0.75) return 'lightning3';
+            return 'lightning3_5';
+        } else {
+            // Danger phase: animate 1 → 5 → 6 → 7 → 8 → 9 → 10
+            const dangerProgress = (cycleTime - LIGHTNING_SAFE_MS) / LIGHTNING_DANGER_MS;
+            const dangerFrames = ['lightning1', 'lightning5', 'lightning6', 'lightning7', 'lightning8', 'lightning9', 'lightning10'];
+            const frameIndex = Math.min(Math.floor(dangerProgress * dangerFrames.length), dangerFrames.length - 1);
+            return dangerFrames[frameIndex];
+        }
+    }
+    
+    // Normal wall
+    const variant = (wall as any).staticVariant as number;
+    return variant === 1 ? 'static1' : 'static2';
+}
+
+// Draw all wall sprites (called from afterRender)
+function drawWallSprites(ctx: CanvasRenderingContext2D, bounds: Matter.Bounds) {
+    if (!wallSpritesLoaded) return;
+    
+    for (const wall of walls) {
+        const screenX = wall.position.x - bounds.min.x;
+        const screenY = wall.position.y - bounds.min.y;
+        const wallHeight = wall.bounds.max.y - wall.bounds.min.y;
+        const wallWidth = CONFIG.WALL_WIDTH;
+        
+        // Cull off-screen walls
+        if (screenY + wallHeight / 2 < -50 || screenY - wallHeight / 2 > window.innerHeight + 50) continue;
+        if (screenX + wallWidth / 2 < -50 || screenX - wallWidth / 2 > window.innerWidth + 50) continue;
+        
+        const spriteKey = getWallSpriteKey(wall);
+        const sprite = wallImages.get(spriteKey);
+        
+        if (sprite) {
             ctx.save();
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.6)';
+            const wallType = (wall as any).wallType as WallType;
             
-            const stripeWidth = 8;
-            if (wallState.dangerSide === 'left') {
-                // Danger on left side - draw red stripe on left edge
-                ctx.fillRect(
-                    wall.position.x - halfWidth - cameraX,
-                    wall.position.y - wallHeight/2 - cameraY,
-                    stripeWidth,
+            if (wallType === 'disappearing' || wallType === 'timed-danger') {
+                // Special walls: render at each frame's native aspect ratio
+                const spriteAspect = sprite.width / sprite.height;
+                const renderWidth = wallHeight * spriteAspect;
+                ctx.drawImage(
+                    sprite,
+                    screenX - renderWidth / 2,
+                    screenY - wallHeight / 2,
+                    renderWidth,
                     wallHeight
                 );
             } else {
-                // Danger on right side - draw red stripe on right edge
-                ctx.fillRect(
-                    wall.position.x + halfWidth - stripeWidth - cameraX,
-                    wall.position.y - wallHeight/2 - cameraY,
-                    stripeWidth,
+                // Normal walls: use physics width
+                ctx.drawImage(
+                    sprite,
+                    screenX - wallWidth / 2,
+                    screenY - wallHeight / 2,
+                    wallWidth,
                     wallHeight
                 );
             }
             ctx.restore();
+        } else {
+            // Fallback colored rectangle
+            const wallType = (wall as any).wallType as WallType;
+            ctx.fillStyle = getWallColor(wallType);
+            ctx.fillRect(screenX - wallWidth / 2, screenY - wallHeight / 2, wallWidth, wallHeight);
         }
-    });
+    }
 }
 
 // --- MAIN LOOP ---
 function update() {
-    if (!gameActive) {
+    if (!gameActive || !player || gamePaused) {
         requestAnimationFrame(update);
         return;
     }
@@ -1073,25 +1204,78 @@ function update() {
     // Update special wall behaviors
     updateSpecialWalls();
 
-    // Camera - smooth follow on both axes
+    // Camera - smooth follow with target-aware look-ahead
     if (player) {
         const w = window.innerWidth;
         const h = window.innerHeight;
         
-        // Target: center player horizontally, player at 70% from top vertically (show more above)
-        const targetX = player.position.x - w / 2;
-        const targetY = player.position.y - h * 0.7;
+        // --- Compute desired look-ahead target (not applied directly) ---
+        let targetLookAheadX = 0;
+        let targetLookAheadY = 0;
         
-        // Smooth horizontal centering (always)
+        if (isWallSliding) {
+            // Find the actual next wall above the player to bias camera toward it
+            const nextJumpDir = currentWallSide === -1 ? 1 : -1;
+            const px = player.position.x;
+            const py = player.position.y;
+            
+            // Search walls for the best "next" wall: above player, in jump direction
+            let bestWall: Matter.Body | null = null;
+            let bestDist = Infinity;
+            for (const wall of walls) {
+                const wy = wall.position.y;
+                const wx = wall.position.x;
+                const dy = py - wy; // positive = wall is above
+                if (dy < 50) continue; // Must be meaningfully above
+                if (dy > JUMP_MAX_VERTICAL * 3) continue; // Not too far
+                // Must be in the jump direction
+                const dx = wx - px;
+                if (nextJumpDir > 0 && dx < 20) continue;
+                if (nextJumpDir < 0 && dx > -20) continue;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestWall = wall;
+                }
+            }
+            
+            if (bestWall) {
+                // Bias camera so the midpoint between player and next wall is roughly centered
+                const midX = (bestWall.position.x + px) / 2;
+                const midY = (bestWall.position.y + py) / 2;
+                targetLookAheadX = midX - px; // Offset from player toward midpoint
+                targetLookAheadY = midY - py; // Offset upward toward midpoint
+            } else {
+                // Fallback: gentle directional bias
+                targetLookAheadX = nextJumpDir * w * 0.1;
+                targetLookAheadY = -h * 0.05;
+            }
+        } else if (!isBackflipping) {
+            // In air (normal jump): mild velocity-based look-ahead
+            targetLookAheadX = player.velocity.x * 10;
+            targetLookAheadY = 0;
+        } else {
+            // Backflipping: suppress look-ahead to avoid dizziness
+            targetLookAheadX = 0;
+            targetLookAheadY = 0;
+        }
+        
+        // --- Smoothly interpolate look-ahead (never jump) ---
+        smoothLookAheadX += (targetLookAheadX - smoothLookAheadX) * LOOK_AHEAD_LERP;
+        smoothLookAheadY += (targetLookAheadY - smoothLookAheadY) * LOOK_AHEAD_LERP;
+        
+        // --- Final camera target ---
+        // Player at 55% from left (slightly off-center toward look-ahead) and 65% from top
+        const targetX = player.position.x - w / 2 + smoothLookAheadX;
+        const targetY = player.position.y - h * 0.65 + smoothLookAheadY;
+        
+        // Smooth camera follow
         cameraX += (targetX - cameraX) * CAMERA_SMOOTH_X;
         
-        // Smooth vertical follow (faster up, limited down)
         if (targetY < cameraY) {
-            // Going up - follow faster
             cameraY += (targetY - cameraY) * CAMERA_SMOOTH_Y;
         } else {
-            // Going down - limit to max 20px below current position
-            const maxDownY = cameraY + 20;
+            const maxDownY = cameraY + 15;
             const clampedTargetY = Math.min(targetY, maxDownY);
             cameraY += (clampedTargetY - cameraY) * CAMERA_SMOOTH_Y_DOWN;
         }
@@ -1105,9 +1289,9 @@ function update() {
         const climbed = Math.max(0, Math.round(startY - player.position.y));
         if (climbed > score) score = climbed;
 
-        // Update HTML Score
-        const scoreEl = document.getElementById('score-value');
-        if (scoreEl) scoreEl.textContent = score.toString();
+        // Update HTML level display
+        const levelEl = document.getElementById('level-value');
+        if (levelEl) levelEl.textContent = level.toString();
     }
 
     Matter.Render.lookAt(render, {
@@ -1123,33 +1307,11 @@ function update() {
     lastFrameTime = now;
     updateMonkeyAnimation(deltaMs);
     
-    // Update backflip rotation
+    // Update backflip rotation - continues until wall contact (handled in collisionActive)
     if (isBackflipping) {
         backflipAngle += backflipSpeed * (deltaMs / 1000);
-        // Complete backflip after full rotation
-        if (Math.abs(backflipAngle) >= Math.PI * 2) {
-            isBackflipping = false;
-            backflipAngle = 0;
-            backflipSpeed = 0;
-        }
     }
     
-    // Draw monkey sprite
-    if (player) {
-        const ctx = render.context;
-        const monkeyState: MonkeyState = {
-            x: player.position.x - cameraX,
-            y: player.position.y - cameraY,
-            facingDir: monkeyFacingDir,
-            isOnWall: isWallSliding,
-            isOnGround: canJump && !isWallSliding,
-            isBackflipping: isBackflipping,
-            backflipAngle: backflipAngle,
-            velocityY: player.velocity.y
-        };
-        drawMonkey(ctx, monkeyState, CONFIG.PLAYER_SIZE);
-    }
-
     requestAnimationFrame(update);
 }
 
@@ -1159,10 +1321,15 @@ function gameOver() {
     if (!gameActive) return;
     
     gameActive = false;
+    gamePaused = false;
+    engine.timing.timeScale = 1;
+    document.getElementById('pause-overlay')?.classList.remove('active');
+    
     const finalScoreEl = document.getElementById('final-score');
-    if (finalScoreEl) finalScoreEl.textContent = score.toString();
+    if (finalScoreEl) finalScoreEl.textContent = level.toString();
 
     document.getElementById('hud')?.classList.add('hidden');
+    document.getElementById('pause-btn')?.classList.add('hidden');
     document.getElementById('game-over')?.classList.add('active');
 }
 
@@ -1174,23 +1341,83 @@ function initUI() {
         document.getElementById('start-screen')?.classList.add('hidden');
         document.getElementById('hud')?.classList.remove('hidden');
         document.getElementById('settings-btn')?.classList.remove('hidden');
+        document.getElementById('pause-btn')?.classList.remove('hidden');
         resetGame();
         gameActive = true;
+        gamePaused = false;
     });
 
     restartBtn?.addEventListener('click', () => {
         document.getElementById('game-over')?.classList.remove('active');
         document.getElementById('hud')?.classList.remove('hidden');
+        document.getElementById('pause-btn')?.classList.remove('hidden');
         resetGame();
         gameActive = true;
+        gamePaused = false;
     });
 
-    // Settings (Simple Toggle)
+    // --- Settings with localStorage persistence ---
+    const savedSettings = localStorage.getItem('wallJumperSettings');
+    const settings: Record<string, boolean> = savedSettings
+        ? JSON.parse(savedSettings)
+        : { music: true, fx: true, haptics: true };
+
+    // Pause / Resume
+    document.getElementById('pause-btn')?.addEventListener('click', () => {
+        if (!gameActive || gamePaused) return;
+        gamePaused = true;
+        engine.timing.timeScale = 0;
+        document.getElementById('pause-overlay')?.classList.add('active');
+        if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
+            (window as any).triggerHaptic('light');
+        }
+    });
+
+    document.getElementById('resume-btn')?.addEventListener('click', () => {
+        gamePaused = false;
+        engine.timing.timeScale = 1;
+        document.getElementById('pause-overlay')?.classList.remove('active');
+        if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
+            (window as any).triggerHaptic('light');
+        }
+    });
+    
+    // Apply saved state to toggles on load
+    (['toggle-music', 'toggle-fx', 'toggle-haptics'] as const).forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const key = el.getAttribute('data-setting');
+        if (key && settings[key] === false) {
+            el.classList.remove('active');
+        }
+    });
+    
+    // Toggle click handlers
+    document.querySelectorAll('.toggle-switch').forEach(toggle => {
+        toggle.addEventListener('click', () => {
+            const key = (toggle as HTMLElement).getAttribute('data-setting');
+            if (!key) return;
+            toggle.classList.toggle('active');
+            settings[key] = toggle.classList.contains('active');
+            localStorage.setItem('wallJumperSettings', JSON.stringify(settings));
+            // Haptic feedback on toggle
+            if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
+                (window as any).triggerHaptic('light');
+            }
+        });
+    });
+    
     document.getElementById('settings-btn')?.addEventListener('click', () => {
         document.getElementById('settings-modal')?.classList.add('active');
+        if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
+            (window as any).triggerHaptic('light');
+        }
     });
     document.getElementById('close-settings')?.addEventListener('click', () => {
         document.getElementById('settings-modal')?.classList.remove('active');
+        if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
+            (window as any).triggerHaptic('light');
+        }
     });
 }
 
@@ -1198,64 +1425,112 @@ function initUI() {
 Matter.Runner.run(Matter.Runner.create(), engine);
 Matter.Render.run(render);
 
-// Debug: Draw pattern labels on walls + special wall indicators
+// --- BACKGROUND & FLOOR RENDERING ---
+function drawBackground(ctx: CanvasRenderingContext2D, bounds: Matter.Bounds) {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    
+    const bgSprite = wallImages.get('bg');
+    if (!bgSprite) {
+        ctx.fillStyle = '#1a3a2a';
+        ctx.fillRect(0, 0, w, h);
+        return;
+    }
+    
+    // Native image dimensions, adjusted for device pixel ratio
+    // Canvas context is scaled by DPR, so divide to get correct visual size
+    const dpr = window.devicePixelRatio || 1;
+    const bgW = (bgSprite.naturalWidth || bgSprite.width) / dpr;
+    const bgH = (bgSprite.naturalHeight || bgSprite.height) / dpr;
+    
+    // Fixed vertically: center image on screen (bottom-aligned so ground area is covered)
+    const drawY = h - bgH;
+    
+    // Scroll horizontally 1:1 with camera
+    // Center the image on the initial camera X, then offset by camera movement
+    const cameraLeft = bounds.min.x;
+    const drawX = (w - bgW) / 2 - cameraLeft;
+    
+    // Tile horizontally if the image doesn't cover the full screen width
+    // Calculate how many tiles we need on each side
+    const startTile = Math.floor((-drawX) / bgW) - 1;
+    const endTile = Math.floor((-drawX + w) / bgW) + 1;
+    
+    for (let t = startTile; t <= endTile; t++) {
+        const tileX = drawX + t * bgW;
+        // Only draw if tile is on screen
+        if (tileX + bgW > 0 && tileX < w) {
+            ctx.drawImage(bgSprite, tileX, drawY, bgW, bgH);
+        }
+    }
+    
+    // Fill any sky area above the image with a matching color
+    if (drawY > 0) {
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillRect(0, 0, w, drawY);
+    }
+}
+
+function drawFloor(ctx: CanvasRenderingContext2D, bounds: Matter.Bounds) {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    
+    // Floor world top Y = bottom of playable area
+    const floorWorldTopY = h - CONFIG.FLOOR_HEIGHT;
+    const floorScreenTopY = floorWorldTopY - bounds.min.y;
+    
+    if (floorScreenTopY > h + 50) return; // Floor is below viewport
+    
+    // Grass strip on top (thin green line)
+    const grassHeight = 6;
+    ctx.fillStyle = '#4a7c2e';
+    ctx.fillRect(0, floorScreenTopY, w, grassHeight);
+    
+    // Top dirt layer (lighter brown)
+    const topDirtHeight = 18;
+    ctx.fillStyle = '#8B6914';
+    ctx.fillRect(0, floorScreenTopY + grassHeight, w, topDirtHeight);
+    
+    // Main dirt body (medium brown)
+    ctx.fillStyle = '#6B4C12';
+    ctx.fillRect(0, floorScreenTopY + grassHeight + topDirtHeight, w, CONFIG.FLOOR_HEIGHT - grassHeight - topDirtHeight);
+    
+    // Deep dirt below floor (darker brown, fills to bottom of screen)
+    const belowY = floorScreenTopY + CONFIG.FLOOR_HEIGHT;
+    if (belowY < h) {
+        ctx.fillStyle = '#3D2B0A';
+        ctx.fillRect(0, belowY, w, h - belowY + 200);
+    }
+}
+
+// Draw wall sprites, floor, background, and player
 Matter.Events.on(render, 'afterRender', () => {
     const ctx = render.context;
     const bounds = render.bounds;
     
-    ctx.save();
-    ctx.font = 'bold 10px sans-serif';
-    ctx.textAlign = 'center';
+    // Draw looping background (behind everything)
+    drawBackground(ctx, bounds);
     
-    for (const wall of walls) {
-        const patternName = (wall as any).patternName as string;
-        const wallIndex = (wall as any).wallIndex as number;
-        const wallType = (wall as any).wallType as WallType;
-        const dangerSide = (wall as any).dangerSide as 'left' | 'right' | undefined;
-        
-        // Transform world coords to screen coords
-        const screenX = wall.position.x - bounds.min.x;
-        const screenY = wall.position.y - bounds.min.y;
-        const wallHeight = wall.bounds.max.y - wall.bounds.min.y;
-        const halfWidth = CONFIG.WALL_WIDTH / 2;
-        
-        // Only draw if on screen
-        if (screenY > -100 && screenY < window.innerHeight + 100) {
-            // Draw danger stripe for one-sided walls
-            if (wallType === 'one-sided-danger' && dangerSide) {
-                const wallState = wallStates.get(wall.id);
-                if (wallState?.isActive) {
-                    ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
-                    const stripeWidth = 10;
-                    if (dangerSide === 'left') {
-                        ctx.fillRect(screenX - halfWidth, screenY - wallHeight/2, stripeWidth, wallHeight);
-                    } else {
-                        ctx.fillRect(screenX + halfWidth - stripeWidth, screenY - wallHeight/2, stripeWidth, wallHeight);
-                    }
-                }
-            }
-            
-            // Pattern name background
-            const label = `${patternName}`;
-            const indexLabel = `#${wallIndex}`;
-            
-            // Color-coded background based on wall type
-            let bgColor = 'rgba(0,0,0,0.7)';
-            if (wallType === 'disappearing') bgColor = 'rgba(255,170,0,0.8)';
-            else if (wallType === 'timed-danger') bgColor = 'rgba(255,0,0,0.8)';
-            else if (wallType === 'one-sided-danger') bgColor = 'rgba(170,0,255,0.8)';
-            
-            ctx.fillStyle = bgColor;
-            ctx.fillRect(screenX - 35, screenY - 20, 70, 28);
-            
-            ctx.fillStyle = '#FFD700';
-            ctx.fillText(label, screenX, screenY - 8);
-            ctx.fillStyle = '#FFF';
-            ctx.fillText(indexLabel, screenX, screenY + 5);
-        }
+    // Draw floor sprite
+    drawFloor(ctx, bounds);
+    
+    // Draw wall sprites
+    drawWallSprites(ctx, bounds);
+    
+    // Draw monkey sprite (must be in afterRender so Matter.js doesn't erase it)
+    if (player && gameActive) {
+        const monkeyState: MonkeyState = {
+            x: player.position.x - bounds.min.x,
+            y: player.position.y - bounds.min.y,
+            facingDir: monkeyFacingDir,
+            isOnWall: isWallSliding,
+            isOnGround: canJump && !isWallSliding,
+            isBackflipping: isBackflipping,
+            backflipAngle: backflipAngle,
+            velocityY: player.velocity.y
+        };
+        drawMonkey(ctx, monkeyState, CONFIG.PLAYER_SIZE);
     }
-    
-    ctx.restore();
 });
 
 attachPhysicsEvents();

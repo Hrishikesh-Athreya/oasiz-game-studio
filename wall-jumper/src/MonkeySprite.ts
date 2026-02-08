@@ -17,6 +17,7 @@ const NINJA_SPRITES = {
     rest1: '/assets/ninja_rest_1.png',  // Head up
     rest2: '/assets/ninja_rest_2.png',  // Head down
     jump: '/assets/ninja_sprite_jump.png',  // Jumping pose
+    flip: '/assets/ninja_flip_posture.png',  // Backflip pose
 };
 
 // Loaded images
@@ -89,7 +90,10 @@ export function drawMonkey(
     // Determine which sprite to use based on state
     let spritePath: string;
     
-    if (!state.isOnWall && !state.isOnGround) {
+    if (state.isBackflipping) {
+        // Backflipping - use flip sprite
+        spritePath = NINJA_SPRITES.flip;
+    } else if (!state.isOnWall && !state.isOnGround) {
         // Jumping/falling - use jump sprite
         spritePath = NINJA_SPRITES.jump;
     } else {
