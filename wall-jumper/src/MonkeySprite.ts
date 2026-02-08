@@ -16,6 +16,7 @@ export interface MonkeyState {
 const NINJA_SPRITES = {
     rest1: '/assets/ninja_rest_1.png',  // Head up
     rest2: '/assets/ninja_rest_2.png',  // Head down
+    jump: '/assets/ninja_sprite_jump.png',  // Jumping pose
 };
 
 // Loaded images
@@ -71,7 +72,7 @@ export function updateMonkeyAnimation(deltaMs: number) {
 }
 
 // Scale factor for rendering
-const RENDER_SCALE = 1.5;
+const RENDER_SCALE = 2.5;
 
 export function drawMonkey(
     ctx: CanvasRenderingContext2D,
@@ -85,12 +86,19 @@ export function drawMonkey(
         return;
     }
     
-    // Determine which sprite to use based on head bob cycle
-    // Use sine wave for smooth bobbing between rest1 (head up) and rest2 (head down)
-    const bobPhase = Math.sin((animTime / BOB_CYCLE_MS) * Math.PI * 2);
-    const useHeadUp = bobPhase > 0;
+    // Determine which sprite to use based on state
+    let spritePath: string;
     
-    const spritePath = useHeadUp ? NINJA_SPRITES.rest1 : NINJA_SPRITES.rest2;
+    if (!state.isOnWall && !state.isOnGround) {
+        // Jumping/falling - use jump sprite
+        spritePath = NINJA_SPRITES.jump;
+    } else {
+        // On wall or ground - use head bob animation
+        const bobPhase = Math.sin((animTime / BOB_CYCLE_MS) * Math.PI * 2);
+        const useHeadUp = bobPhase > 0;
+        spritePath = useHeadUp ? NINJA_SPRITES.rest1 : NINJA_SPRITES.rest2;
+    }
+    
     const sprite = loadedImages.get(spritePath);
     
     if (!sprite) {
@@ -112,7 +120,7 @@ export function drawMonkey(
     
     // Flip horizontally based on facing direction
     // The sprites face right by default, so flip when facing left
-    if (state.facingDir === -1) {
+    if (state.facingDir === 1) {
         ctx.scale(-1, 1);
     }
     

@@ -7,14 +7,14 @@ import { drawMonkey, updateMonkeyAnimation, MonkeyState } from './MonkeySprite';
 const CONFIG = {
     GRAVITY: 0.8,
     JUMP_ANGLE_DEG: 65,
-    JUMP_INITIAL_SPEED: 12,
-    THRUST_FORCE: 1.1,
+    JUMP_INITIAL_SPEED: 9,
+    THRUST_FORCE: 1.0,
     THRUST_MAX_MS: 400,
     // Air flip config
     FLIP_ANGLE_DEG: 55,
-    FLIP_INITIAL_SPEED: 10,
-    FLIP_THRUST_FORCE: 1.1,
-    FLIP_THRUST_MAX_MS: 300,
+    FLIP_INITIAL_SPEED: 9,
+    FLIP_THRUST_FORCE: 1.0,
+    FLIP_THRUST_MAX_MS: 400,
     WALL_WIDTH: 40,
     PLAYER_SIZE: 30,
     GENERATE_AHEAD_SCREENS: 0.9,
@@ -299,6 +299,7 @@ const VARIETY_START_LEVEL = 5; // Start spawning special walls after this level
 
 // Ground death tracking - game over if player returns to ground after leaving
 let hasLeftGround = false;
+let resetGraceFrames = 0; // Ignore collision events for a few frames after reset
 
 // Camera smoothing config
 const CAMERA_SMOOTH_X = 0.08; // Horizontal follow speed
@@ -628,9 +629,11 @@ function resetGame() {
     level = 0;
     countedWalls.clear(); // Reset level tracking
     hasLeftGround = false; // Reset ground death tracking
+    resetGraceFrames = 30; // Ignore collision events for 30 frames after reset
     
     // Reset monkey animation state
-    monkeyFacingDir = 1;
+    // Player starts on right side of left wall, facing RIGHT towards the right wall
+    monkeyFacingDir = -1;
     isBackflipping = false;
     backflipAngle = 0;
     backflipSpeed = 0;
@@ -784,7 +787,8 @@ function attachPhysicsEvents() {
                 }
             } else if (labels.includes('ground')) {
                 // Game over if player returns to ground after leaving
-                if (hasLeftGround) {
+                // Skip during reset grace period to avoid false triggers
+                if (hasLeftGround && resetGraceFrames <= 0) {
                     gameOver();
                     return;
                 }
@@ -915,16 +919,22 @@ window.addEventListener('mouseup', (e) => {
 });
 
 window.addEventListener('touchstart', (e) => {
+    // Only prevent default and handle game input when game is active
+    // This allows the start button to receive click events on mobile
+    if (!gameActive) return;
     e.preventDefault();
     handlePressStart();
 }, { passive: false });
 
 window.addEventListener('touchend', (e) => {
+    // Only prevent default when game is active
+    if (!gameActive) return;
     e.preventDefault();
     handlePressEnd();
 }, { passive: false });
 
 window.addEventListener('touchcancel', (e) => {
+    if (!gameActive) return;
     e.preventDefault();
     isThrusting = false;
 }, { passive: false });
@@ -1057,6 +1067,9 @@ function update() {
         return;
     }
     
+    // Decrement reset grace frames
+    if (resetGraceFrames > 0) resetGraceFrames--;
+    
     // Update special wall behaviors
     updateSpecialWalls();
 
@@ -1065,9 +1078,9 @@ function update() {
         const w = window.innerWidth;
         const h = window.innerHeight;
         
-        // Target: center player horizontally, player at 60% from top vertically
+        // Target: center player horizontally, player at 70% from top vertically (show more above)
         const targetX = player.position.x - w / 2;
-        const targetY = player.position.y - h * 0.6;
+        const targetY = player.position.y - h * 0.7;
         
         // Smooth horizontal centering (always)
         cameraX += (targetX - cameraX) * CAMERA_SMOOTH_X;
@@ -1142,6 +1155,9 @@ function update() {
 
 // --- UI ---
 function gameOver() {
+    // Prevent multiple game over calls
+    if (!gameActive) return;
+    
     gameActive = false;
     const finalScoreEl = document.getElementById('final-score');
     if (finalScoreEl) finalScoreEl.textContent = score.toString();

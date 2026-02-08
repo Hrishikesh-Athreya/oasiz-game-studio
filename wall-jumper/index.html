@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
   <title>Wall Jumper</title>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Press+Start+2P&display=swap" rel="stylesheet">
   <style>
     * {
       margin: 0;
@@ -19,7 +19,7 @@
       overflow: hidden;
       touch-action: none;
       font-family: 'Outfit', sans-serif;
-      background: #0f0f1a;
+      background: #0a1a0a;
     }
 
     canvas {
@@ -33,7 +33,7 @@
       display: none !important;
     }
 
-    /* Start Screen */
+    /* Start Screen - Forest/Ninja theme */
     #start-screen {
       position: absolute;
       top: 0;
@@ -44,79 +44,98 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      background: linear-gradient(180deg, #0a1a0a 0%, #1a2e1a 30%, #2a3f20 60%, #1a2e1a 100%);
       z-index: 100;
+      overflow: hidden;
     }
 
     .title-container {
       text-align: center;
-      margin-bottom: 60px;
+      margin-bottom: 50px;
+      position: relative;
+      z-index: 2;
     }
 
     .game-title {
-      font-size: 64px;
-      font-weight: 800;
-      color: #fff;
-      text-shadow: 0 0 40px rgba(0, 212, 255, 0.5), 0 4px 0 #00a8cc;
-      letter-spacing: 2px;
-      margin-bottom: 10px;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 28px;
+      color: #e8d5a3;
+      text-shadow: 0 0 30px rgba(232, 213, 163, 0.3), 0 3px 0 #8B6914, 0 4px 8px rgba(0,0,0,0.5);
+      letter-spacing: 3px;
+      margin-bottom: 16px;
+      line-height: 1.4;
     }
 
     .game-subtitle {
-      font-size: 18px;
-      color: rgba(255, 255, 255, 0.6);
+      font-family: 'Outfit', sans-serif;
+      font-size: 14px;
+      color: rgba(168, 204, 140, 0.7);
       font-weight: 400;
-      letter-spacing: 4px;
+      letter-spacing: 5px;
       text-transform: uppercase;
     }
 
     .start-btn {
       width: 200px;
-      height: 60px;
-      border: none;
-      border-radius: 30px;
-      background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
-      color: white;
-      font-family: 'Outfit', sans-serif;
-      font-size: 22px;
-      font-weight: 600;
+      height: 56px;
+      border: 2px solid rgba(232, 213, 163, 0.3);
+      border-radius: 12px;
+      background: linear-gradient(135deg, #4a7c2e 0%, #3a6420 100%);
+      color: #e8d5a3;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 16px;
       cursor: pointer;
-      box-shadow: 0 8px 25px rgba(0, 212, 255, 0.4), inset 0 1px 0 rgba(255,255,255,0.2);
+      box-shadow: 0 6px 20px rgba(74, 124, 46, 0.4), inset 0 1px 0 rgba(255,255,255,0.1);
       transition: transform 0.15s ease, box-shadow 0.15s ease;
       text-transform: uppercase;
-      letter-spacing: 2px;
+      letter-spacing: 3px;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      position: relative;
+      z-index: 2;
     }
 
     .start-btn:hover {
       transform: translateY(-2px);
-      box-shadow: 0 12px 35px rgba(0, 212, 255, 0.5), inset 0 1px 0 rgba(255,255,255,0.2);
+      box-shadow: 0 10px 30px rgba(74, 124, 46, 0.5), inset 0 1px 0 rgba(255,255,255,0.15);
     }
 
     .start-btn:active {
       transform: translateY(1px);
-      box-shadow: 0 4px 15px rgba(0, 212, 255, 0.3);
+      box-shadow: 0 3px 10px rgba(74, 124, 46, 0.3);
     }
 
     .instructions {
-      margin-top: 40px;
+      margin-top: 35px;
       text-align: center;
-      color: rgba(255, 255, 255, 0.5);
-      font-size: 14px;
+      color: rgba(168, 204, 140, 0.4);
+      font-size: 13px;
+      letter-spacing: 1px;
+      position: relative;
+      z-index: 2;
     }
 
     .instructions span {
       display: block;
-      margin: 5px 0;
+      margin: 6px 0;
     }
 
-    /* HUD */
+    /* Bamboo decorations for start screen */
+    .bamboo-deco {
+      position: absolute;
+      width: 8px;
+      background: linear-gradient(90deg, #3a5a2a, #5a8a3a, #3a5a2a);
+      border-radius: 4px;
+      opacity: 0.15;
+      z-index: 1;
+    }
+
+    /* HUD - Level Display */
     #hud {
       position: absolute;
       top: 45px;
-      left: 20px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      left: 50%;
+      transform: translateX(-50%);
       z-index: 50;
       pointer-events: none;
     }
@@ -127,31 +146,13 @@
       }
     }
 
-    .score-display {
-      background: rgba(0, 0, 0, 0.5);
-      backdrop-filter: blur(10px);
-      border-radius: 25px;
-      padding: 10px 20px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .score-icon {
-      width: 24px;
-      height: 24px;
-      background: linear-gradient(135deg, #ffd700 0%, #ffaa00 100%);
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .score-value {
-      font-size: 24px;
-      font-weight: 700;
-      color: white;
-      text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    .level-display {
+      font-family: 'Press Start 2P', monospace;
+      font-size: 28px;
+      color: #e8d5a3;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.8), 0 0 15px rgba(232,213,163,0.2);
+      text-align: center;
+      line-height: 1;
     }
 
     /* Settings Button */
@@ -159,18 +160,20 @@
       position: absolute;
       top: 45px;
       right: 20px;
-      width: 50px;
-      height: 50px;
-      border: none;
-      border-radius: 50%;
-      background: rgba(0, 0, 0, 0.5);
+      width: 48px;
+      height: 48px;
+      border: 2px solid rgba(232, 213, 163, 0.2);
+      border-radius: 12px;
+      background: rgba(10, 26, 10, 0.7);
       backdrop-filter: blur(10px);
       cursor: pointer;
-      z-index: 50;
+      z-index: 55;
       display: flex;
       align-items: center;
       justify-content: center;
       transition: transform 0.15s ease, background 0.15s ease;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
     }
 
     @media (pointer: coarse) {
@@ -180,7 +183,7 @@
     }
 
     #settings-btn:hover {
-      background: rgba(0, 0, 0, 0.7);
+      background: rgba(10, 26, 10, 0.9);
       transform: scale(1.05);
     }
 
@@ -189,9 +192,9 @@
     }
 
     .gear-icon {
-      width: 24px;
-      height: 24px;
-      fill: white;
+      width: 22px;
+      height: 22px;
+      fill: #e8d5a3;
     }
 
     /* Settings Modal */
@@ -201,48 +204,52 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(0, 0, 0, 0.8);
-      backdrop-filter: blur(5px);
+      background: rgba(5, 15, 5, 0.85);
+      backdrop-filter: blur(8px);
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 200;
       opacity: 0;
       visibility: hidden;
-      transition: opacity 0.2s ease, visibility 0.2s ease;
+      pointer-events: none;
+      transition: opacity 0.25s ease, visibility 0.25s ease;
     }
 
     #settings-modal.active {
       opacity: 1;
       visibility: visible;
+      pointer-events: auto;
     }
 
     .settings-panel {
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      border-radius: 20px;
-      padding: 30px;
+      background: linear-gradient(135deg, #1a2e1a 0%, #0f1f0f 100%);
+      border-radius: 16px;
+      padding: 28px 24px;
       min-width: 280px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      max-width: 320px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(168, 204, 140, 0.15);
     }
 
     .settings-title {
-      font-size: 24px;
-      font-weight: 700;
-      color: white;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 16px;
+      color: #e8d5a3;
       text-align: center;
-      margin-bottom: 25px;
+      margin-bottom: 24px;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.4);
     }
 
     .setting-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 15px 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(168, 204, 140, 0.1);
     }
 
-    .setting-row:last-child {
+    .setting-row:last-of-type {
       border-bottom: none;
     }
 
@@ -250,32 +257,37 @@
       display: flex;
       align-items: center;
       gap: 12px;
-      color: white;
-      font-size: 18px;
+      color: rgba(232, 213, 163, 0.9);
+      font-size: 16px;
+      font-weight: 500;
     }
 
     .setting-icon {
-      font-size: 24px;
+      width: 22px;
+      height: 22px;
+      fill: #a8cc8c;
     }
 
     .toggle-switch {
-      width: 56px;
-      height: 32px;
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 16px;
+      width: 52px;
+      height: 30px;
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 15px;
       position: relative;
       cursor: pointer;
       transition: background 0.2s ease;
+      border: 1px solid rgba(255,255,255,0.05);
     }
 
     .toggle-switch.active {
-      background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+      background: linear-gradient(135deg, #4a7c2e 0%, #3a6420 100%);
+      border-color: rgba(168, 204, 140, 0.3);
     }
 
     .toggle-knob {
-      width: 26px;
-      height: 26px;
-      background: white;
+      width: 24px;
+      height: 24px;
+      background: #e8d5a3;
       border-radius: 50%;
       position: absolute;
       top: 3px;
@@ -285,26 +297,28 @@
     }
 
     .toggle-switch.active .toggle-knob {
-      transform: translateX(24px);
+      transform: translateX(22px);
     }
 
     .close-settings {
       width: 100%;
-      height: 50px;
-      margin-top: 25px;
-      border: none;
-      border-radius: 25px;
-      background: rgba(255, 255, 255, 0.1);
-      color: white;
-      font-family: 'Outfit', sans-serif;
-      font-size: 16px;
-      font-weight: 600;
+      height: 46px;
+      margin-top: 20px;
+      border: 1px solid rgba(232, 213, 163, 0.2);
+      border-radius: 12px;
+      background: rgba(232, 213, 163, 0.08);
+      color: #e8d5a3;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 11px;
+      letter-spacing: 2px;
       cursor: pointer;
       transition: background 0.15s ease;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
     }
 
     .close-settings:hover {
-      background: rgba(255, 255, 255, 0.2);
+      background: rgba(232, 213, 163, 0.15);
     }
 
     /* Game Over Overlay */
@@ -314,8 +328,8 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(0, 0, 0, 0.85);
-      backdrop-filter: blur(10px);
+      background: rgba(5, 15, 5, 0.9);
+      backdrop-filter: blur(8px);
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -323,77 +337,171 @@
       z-index: 150;
       opacity: 0;
       visibility: hidden;
+      pointer-events: none;
       transition: opacity 0.3s ease, visibility 0.3s ease;
     }
 
     #game-over.active {
       opacity: 1;
       visibility: visible;
+      pointer-events: auto;
     }
 
     .game-over-title {
-      font-size: 48px;
-      font-weight: 800;
-      color: #ff4757;
-      text-shadow: 0 0 30px rgba(255, 71, 87, 0.5);
-      margin-bottom: 20px;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 24px;
+      color: #c0392b;
+      text-shadow: 0 0 20px rgba(192, 57, 43, 0.4), 0 3px 0 #7f2318;
+      margin-bottom: 30px;
+      letter-spacing: 2px;
     }
 
     .final-score-label {
-      font-size: 18px;
-      color: rgba(255, 255, 255, 0.6);
+      font-family: 'Outfit', sans-serif;
+      font-size: 14px;
+      color: rgba(168, 204, 140, 0.6);
       text-transform: uppercase;
-      letter-spacing: 3px;
-      margin-bottom: 10px;
+      letter-spacing: 4px;
+      margin-bottom: 8px;
     }
 
     .final-score-value {
-      font-size: 72px;
-      font-weight: 800;
-      color: white;
-      text-shadow: 0 0 40px rgba(0, 212, 255, 0.5);
+      font-family: 'Press Start 2P', monospace;
+      font-size: 56px;
+      color: #e8d5a3;
+      text-shadow: 0 0 30px rgba(232, 213, 163, 0.3), 0 3px 0 #8B6914;
       margin-bottom: 40px;
     }
 
     .restart-btn {
-      width: 200px;
-      height: 60px;
-      border: none;
-      border-radius: 30px;
-      background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
-      color: white;
-      font-family: 'Outfit', sans-serif;
-      font-size: 20px;
-      font-weight: 600;
+      width: 220px;
+      height: 56px;
+      border: 2px solid rgba(232, 213, 163, 0.3);
+      border-radius: 12px;
+      background: linear-gradient(135deg, #4a7c2e 0%, #3a6420 100%);
+      color: #e8d5a3;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 12px;
       cursor: pointer;
-      box-shadow: 0 8px 25px rgba(0, 212, 255, 0.4);
+      box-shadow: 0 6px 20px rgba(74, 124, 46, 0.4);
       transition: transform 0.15s ease, box-shadow 0.15s ease;
       text-transform: uppercase;
       letter-spacing: 2px;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
     }
 
     .restart-btn:hover {
       transform: translateY(-2px);
-      box-shadow: 0 12px 35px rgba(0, 212, 255, 0.5);
+      box-shadow: 0 10px 30px rgba(74, 124, 46, 0.5);
     }
 
     .restart-btn:active {
       transform: translateY(1px);
     }
 
-    /* Floating particles animation for start screen */
-    .particle {
+    /* Pause Button */
+    #pause-btn {
       position: absolute;
-      width: 4px;
-      height: 4px;
-      background: rgba(0, 212, 255, 0.6);
-      border-radius: 50%;
-      animation: float 8s infinite ease-in-out;
+      top: 45px;
+      left: 20px;
+      width: 48px;
+      height: 48px;
+      border: 2px solid rgba(232, 213, 163, 0.2);
+      border-radius: 12px;
+      background: rgba(10, 26, 10, 0.7);
+      backdrop-filter: blur(10px);
+      cursor: pointer;
+      z-index: 55;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.15s ease, background 0.15s ease;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
     }
 
-    @keyframes float {
-      0%, 100% { transform: translateY(0) translateX(0); opacity: 0.6; }
-      50% { transform: translateY(-100px) translateX(20px); opacity: 0.2; }
+    @media (pointer: coarse) {
+      #pause-btn {
+        top: 120px;
+      }
+    }
+
+    #pause-btn:hover {
+      background: rgba(10, 26, 10, 0.9);
+      transform: scale(1.05);
+    }
+
+    #pause-btn:active {
+      transform: scale(0.95);
+    }
+
+    .pause-icon {
+      width: 22px;
+      height: 22px;
+      fill: #e8d5a3;
+    }
+
+    /* Pause Overlay */
+    #pause-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(5, 15, 5, 0.8);
+      backdrop-filter: blur(4px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 160;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.2s ease, visibility 0.2s ease;
+    }
+
+    #pause-overlay.active {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .pause-title {
+      font-family: 'Press Start 2P', monospace;
+      font-size: 24px;
+      color: #e8d5a3;
+      text-shadow: 0 0 20px rgba(232, 213, 163, 0.3), 0 3px 0 #8B6914;
+      margin-bottom: 40px;
+      letter-spacing: 2px;
+    }
+
+    .resume-btn {
+      width: 220px;
+      height: 56px;
+      border: 2px solid rgba(232, 213, 163, 0.3);
+      border-radius: 12px;
+      background: linear-gradient(135deg, #4a7c2e 0%, #3a6420 100%);
+      color: #e8d5a3;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(74, 124, 46, 0.4);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .resume-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 30px rgba(74, 124, 46, 0.5);
+    }
+
+    .resume-btn:active {
+      transform: translateY(1px);
     }
   </style>
 </head>
@@ -415,15 +523,15 @@
 
   <!-- HUD -->
   <div id="hud" class="hidden">
-    <div class="score-display">
-      <div class="score-icon"></div>
-      <span class="score-value" id="score-value">0</span>
-    </div>
-    <div class="score-display" style="background: rgba(0, 170, 255, 0.5);">
-      <span style="font-size: 14px; color: rgba(255,255,255,0.7);">LVL</span>
-      <span class="score-value" id="level-value">0</span>
-    </div>
+    <div class="level-display" id="level-value">0</div>
   </div>
+
+  <!-- Pause Button -->
+  <button id="pause-btn" class="hidden">
+    <svg class="pause-icon" viewBox="0 0 24 24">
+      <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+    </svg>
+  </button>
 
   <!-- Settings Button -->
   <button id="settings-btn" class="hidden">
@@ -438,28 +546,28 @@
       <h2 class="settings-title">Settings</h2>
       <div class="setting-row">
         <div class="setting-label">
-          <span class="setting-icon">🎵</span>
+          <svg class="setting-icon" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55C7.79 13 6 14.79 6 17s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
           <span>Music</span>
         </div>
-        <div class="toggle-switch active" id="toggle-music">
+        <div class="toggle-switch active" id="toggle-music" data-setting="music">
           <div class="toggle-knob"></div>
         </div>
       </div>
       <div class="setting-row">
         <div class="setting-label">
-          <span class="setting-icon">🔊</span>
+          <svg class="setting-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
           <span>Sound FX</span>
         </div>
-        <div class="toggle-switch active" id="toggle-fx">
+        <div class="toggle-switch active" id="toggle-fx" data-setting="fx">
           <div class="toggle-knob"></div>
         </div>
       </div>
       <div class="setting-row">
         <div class="setting-label">
-          <span class="setting-icon">📳</span>
+          <svg class="setting-icon" viewBox="0 0 24 24"><path d="M0 15h2V9H0v6zm4 2h2V7H4v10zm4 3h2V4H8v16zm4-3h2V7h-2v10zm4-2h2V9h-2v6zm4-6v6h2V9h-2z"/></svg>
           <span>Haptics</span>
         </div>
-        <div class="toggle-switch active" id="toggle-haptics">
+        <div class="toggle-switch active" id="toggle-haptics" data-setting="haptics">
           <div class="toggle-knob"></div>
         </div>
       </div>
@@ -467,10 +575,16 @@
     </div>
   </div>
 
+  <!-- Pause Overlay -->
+  <div id="pause-overlay">
+    <h2 class="pause-title">PAUSED</h2>
+    <button class="resume-btn" id="resume-btn">RESUME</button>
+  </div>
+
   <!-- Game Over Overlay -->
   <div id="game-over">
     <h2 class="game-over-title">GAME OVER</h2>
-    <p class="final-score-label">Your Score</p>
+    <p class="final-score-label">Level Reached</p>
     <p class="final-score-value" id="final-score">0</p>
     <button class="restart-btn" id="restart-btn">PLAY AGAIN</button>
   </div>
