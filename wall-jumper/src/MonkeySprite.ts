@@ -124,7 +124,7 @@ export function drawMonkey(
     
     // Flip horizontally based on facing direction
     // The sprites face right by default, so flip when facing left
-    if (state.facingDir === 1) {
+    if (state.facingDir === -1) {
         ctx.scale(-1, 1);
     }
     

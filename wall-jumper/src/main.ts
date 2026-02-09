@@ -54,6 +54,56 @@ const WALL_SPRITE_PATHS: Record<string, string> = {
     bg: '/assets/nature_background.png',
 };
 
+// Background Music
+const bgMusic = new Audio('/assets/Shadow Step.mp3');
+bgMusic.loop = true;
+bgMusic.volume = 0.5;
+
+// Death Sound
+const deathSound = new Audio('/assets/death_sound.mp3');
+deathSound.volume = 0.1;
+
+// Settings (module level for access across functions)
+let settings: Record<string, boolean> = { music: true, fx: true, haptics: true };
+
+function loadSettings(): void {
+    const saved = localStorage.getItem('wallJumperSettings');
+    if (saved) {
+        settings = JSON.parse(saved);
+    }
+}
+
+function saveSettings(): void {
+    localStorage.setItem('wallJumperSettings', JSON.stringify(settings));
+}
+
+function playMusic() {
+    if (bgMusic.paused && settings.music) {
+        bgMusic.play().catch(() => {
+            // Autoplay blocked, will play on next user interaction
+        });
+    }
+}
+
+function pauseMusic() {
+    if (!bgMusic.paused) {
+        bgMusic.pause();
+    }
+}
+
+function stopMusic() {
+    bgMusic.pause();
+    bgMusic.currentTime = 0;
+}
+
+function updateMusicState() {
+    if (gameActive && !gamePaused && settings.music) {
+        playMusic();
+    } else {
+        pauseMusic();
+    }
+}
+
 function loadWallSprites(): Promise<void> {
     return new Promise((resolve) => {
         const entries = Object.entries(WALL_SPRITE_PATHS);
@@ -824,6 +874,8 @@ function attachPhysicsEvents() {
 
                 const isWallOnLeft = wallBody.position.x < playerBody.position.x;
                 currentWallSide = isWallOnLeft ? -1 : 1;
+                // Face away from the wall (toward open space)
+                monkeyFacingDir = isWallOnLeft ? 1 : -1;
                 
                 // Level tracking: count each unique wall we stick to
                 if (!countedWalls.has(wallBody.id)) {
@@ -1214,12 +1266,11 @@ function update() {
         let targetLookAheadY = 0;
         
         if (isWallSliding) {
-            // Find the actual next wall above the player to bias camera toward it
-            const nextJumpDir = currentWallSide === -1 ? 1 : -1;
+            // Find the closest wall above the player (any direction) to bias camera toward it
             const px = player.position.x;
             const py = player.position.y;
             
-            // Search walls for the best "next" wall: above player, in jump direction
+            // Search ALL walls above for the closest reachable one
             let bestWall: Matter.Body | null = null;
             let bestDist = Infinity;
             for (const wall of walls) {
@@ -1228,11 +1279,9 @@ function update() {
                 const dy = py - wy; // positive = wall is above
                 if (dy < 50) continue; // Must be meaningfully above
                 if (dy > JUMP_MAX_VERTICAL * 3) continue; // Not too far
-                // Must be in the jump direction
-                const dx = wx - px;
-                if (nextJumpDir > 0 && dx < 20) continue;
-                if (nextJumpDir < 0 && dx > -20) continue;
-                const dist = Math.sqrt(dx * dx + dy * dy);
+                // Skip the wall we're currently on (same X position)
+                if (Math.abs(wx - px) < CONFIG.WALL_WIDTH) continue;
+                const dist = Math.sqrt((wx - px) * (wx - px) + dy * dy);
                 if (dist < bestDist) {
                     bestDist = dist;
                     bestWall = wall;
@@ -1246,7 +1295,8 @@ function update() {
                 targetLookAheadX = midX - px; // Offset from player toward midpoint
                 targetLookAheadY = midY - py; // Offset upward toward midpoint
             } else {
-                // Fallback: gentle directional bias
+                // Fallback: gentle directional bias based on wall side
+                const nextJumpDir = currentWallSide === -1 ? 1 : -1;
                 targetLookAheadX = nextJumpDir * w * 0.1;
                 targetLookAheadY = -h * 0.05;
             }
@@ -1324,6 +1374,15 @@ function gameOver() {
     gamePaused = false;
     engine.timing.timeScale = 1;
     document.getElementById('pause-overlay')?.classList.remove('active');
+    stopMusic();
+    
+    // Play death sound if FX is enabled
+    if (settings.fx) {
+        deathSound.currentTime = 0;
+        deathSound.play().catch(() => {
+            // Ignore autoplay errors
+        });
+    }
     
     const finalScoreEl = document.getElementById('final-score');
     if (finalScoreEl) finalScoreEl.textContent = level.toString();
@@ -1345,6 +1404,7 @@ function initUI() {
         resetGame();
         gameActive = true;
         gamePaused = false;
+        playMusic();
     });
 
     restartBtn?.addEventListener('click', () => {
@@ -1354,14 +1414,12 @@ function initUI() {
         resetGame();
         gameActive = true;
         gamePaused = false;
+        playMusic();
     });
 
     // --- Settings with localStorage persistence ---
-    const savedSettings = localStorage.getItem('wallJumperSettings');
-    const settings: Record<string, boolean> = savedSettings
-        ? JSON.parse(savedSettings)
-        : { music: true, fx: true, haptics: true };
-
+    loadSettings();
+    
     // Pause / Resume
     document.getElementById('pause-btn')?.addEventListener('click', () => {
         if (!gameActive || gamePaused) return;
@@ -1371,6 +1429,7 @@ function initUI() {
         if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
             (window as any).triggerHaptic('light');
         }
+        pauseMusic();
     });
 
     document.getElementById('resume-btn')?.addEventListener('click', () => {
@@ -1380,6 +1439,7 @@ function initUI() {
         if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
             (window as any).triggerHaptic('light');
         }
+        playMusic();
     });
     
     // Apply saved state to toggles on load
@@ -1399,7 +1459,11 @@ function initUI() {
             if (!key) return;
             toggle.classList.toggle('active');
             settings[key] = toggle.classList.contains('active');
-            localStorage.setItem('wallJumperSettings', JSON.stringify(settings));
+            saveSettings();
+            // Music toggle - update music state immediately
+            if (key === 'music') {
+                updateMusicState();
+            }
             // Haptic feedback on toggle
             if (settings.haptics && typeof (window as any).triggerHaptic === 'function') {
                 (window as any).triggerHaptic('light');
@@ -1519,9 +1583,15 @@ Matter.Events.on(render, 'afterRender', () => {
     
     // Draw monkey sprite (must be in afterRender so Matter.js doesn't erase it)
     if (player && gameActive) {
+        // Clamp monkey Y so sprite doesn't cut into the dirt/floor
+        const floorWorldTopY = window.innerHeight - CONFIG.FLOOR_HEIGHT;
+        const spriteRenderHeight = CONFIG.PLAYER_SIZE * 2.5; // Matches RENDER_SCALE in MonkeySprite
+        const maxWorldY = floorWorldTopY - spriteRenderHeight / 2 + CONFIG.PLAYER_SIZE / 2;
+        const clampedY = Math.min(player.position.y, maxWorldY);
+        
         const monkeyState: MonkeyState = {
             x: player.position.x - bounds.min.x,
-            y: player.position.y - bounds.min.y,
+            y: clampedY - bounds.min.y,
             facingDir: monkeyFacingDir,
             isOnWall: isWallSliding,
             isOnGround: canJump && !isWallSliding,
